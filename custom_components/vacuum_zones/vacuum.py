@@ -13,6 +13,11 @@ from homeassistant.const import (
 from homeassistant.core import Context, Event, State
 from homeassistant.helpers import entity_registry
 from homeassistant.helpers.script import Script
+from homeassistant.config_entries import ConfigEntry
+import json
+import yaml
+
+from .const import DOMAIN, CONF_ZONES
 
 
 try:
@@ -32,11 +37,70 @@ except ImportError:
 
 
 async def async_setup_platform(hass, _, async_add_entities, discovery_info=None):
+    """Set up platform from YAML configuration."""
     entity_id: str = discovery_info["entity_id"]
     queue: list[ZoneVacuum] = []
     entities = [
         ZoneVacuum(name, config, entity_id, queue)
         for name, config in discovery_info["zones"].items()
+    ]
+    async_add_entities(entities)
+
+    async def state_changed_event_listener(event: Event):
+        if entity_id != event.data.get(ATTR_ENTITY_ID) or not queue:
+            return
+
+        new_state: State = event.data.get("new_state")
+        if new_state.state not in (STATE_RETURNING, STATE_DOCKED):
+            return
+
+        prev: ZoneVacuum = queue.pop(0)
+        await prev.internal_stop()
+
+        if not queue:
+            return
+
+        next_: ZoneVacuum = queue[0]
+        await next_.internal_start(event.context)
+
+    hass.bus.async_listen(EVENT_STATE_CHANGED, state_changed_event_listener)
+
+
+async def async_setup_entry(hass, config_entry: ConfigEntry, async_add_entities):
+    """Set up platform from config entry."""
+    data = config_entry.data
+    entity_id: str = data[ATTR_ENTITY_ID]
+    queue: list[ZoneVacuum] = []
+    
+    # Парсим конфигурацию зон
+    zones_config = {}
+    for zone_id, zone_data in data[CONF_ZONES].items():
+        config = dict(zone_data)
+        
+        # Парсим JSON строки если они есть
+        if isinstance(config.get("zone"), str):
+            try:
+                config["zone"] = json.loads(config["zone"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+                
+        if isinstance(config.get("goto"), str):
+            try:
+                config["goto"] = json.loads(config["goto"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+                
+        if isinstance(config.get(CONF_SEQUENCE), str):
+            try:
+                config[CONF_SEQUENCE] = yaml.safe_load(config[CONF_SEQUENCE])
+            except (yaml.YAMLError, TypeError):
+                pass
+        
+        zones_config[zone_id] = config
+    
+    entities = [
+        ZoneVacuum(name, config, entity_id, queue)
+        for name, config in zones_config.items()
     ]
     async_add_entities(entities)
 
