@@ -3,6 +3,7 @@ from homeassistant.components.vacuum import (
     VacuumEntityFeature,
     DOMAIN as VACUUM_DOMAIN,
 )
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.const import (
     CONF_SEQUENCE,
     STATE_IDLE,
@@ -136,6 +137,15 @@ class ZoneVacuum(StateVacuumEntity):
         self._attr_name = config.pop("name", name)
         self.service_data: dict = config | {ATTR_ENTITY_ID: entity_id}
         self.queue = queue
+        # Добавляем уникальный идентификатор для возможности управления через UI
+        self._attr_unique_id = f"{entity_id}_{name.lower().replace(' ', '_')}"
+        # Добавляем информацию об устройстве
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entity_id)},
+            name=f"Vacuum Zones - {entity_id}",
+            manufacturer="VacuumZones",
+            model="Zone Controller",
+        )
 
     @property
     def vacuum_entity_id(self) -> str:

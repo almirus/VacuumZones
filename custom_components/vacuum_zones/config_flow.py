@@ -113,14 +113,11 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_REPEATS: user_input.get(CONF_REPEATS, 1)
                 }
                 
-                # После добавления зоны предлагаем добавить еще или завершить
-                if user_input.get("add_another"):
-                    return await self.async_step_add_zone()
-                else:
-                    return self.async_create_entry(
-                        title=f"Vacuum Zones - {self.data[CONF_ENTITY_ID]}",
-                        data=self.data,
-                    )
+                # После добавления зоны завершаем конфигурацию
+                return self.async_create_entry(
+                    title=f"Vacuum Zones - {self.data[CONF_ENTITY_ID]}",
+                    data=self.data,
+                )
 
         # Получаем список всех зон из Home Assistant areas
         print(f"[VacuumZones DEBUG] Получаем доступные зоны...")
@@ -139,7 +136,6 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_NAME): vol.In(available_zones) if available_zones else str,
                 vol.Optional(CONF_ROOM_ID, default=""): str,
                 vol.Optional(CONF_REPEATS, default=1): vol.All(int, vol.Range(min=1, max=10)),
-                vol.Optional("add_another", default=False): bool,
             }),
             errors=errors,
         )
@@ -167,7 +163,20 @@ class VacuumZonesOptionsFlowHandler(config_entries.OptionsFlow):
                 return await self.async_step_add_zone()
             elif user_input.get("edit_zone"):
                 zone_id = user_input["zone_to_edit"]
-                return await self.async_step_edit_zone(zone_id)
+                # Сохраняем zone_id для редактирования
+                self._edit_zone_id = zone_id
+                # Показываем форму редактирования сразу
+                zone_config = self.zones[zone_id]
+                return self.async_show_form(
+                    step_id="edit_zone",
+                    data_schema=vol.Schema({
+                        vol.Required(CONF_REPEATS, default=zone_config.get(CONF_REPEATS, 1)): vol.All(int, vol.Range(min=1, max=10)),
+                    }),
+                    description_placeholders={
+                        "zone_name": zone_config.get(CONF_NAME, zone_id),
+                        "room_id": zone_config.get(CONF_ROOM_ID, "N/A"),
+                    },
+                )
             elif user_input.get("delete_zone"):
                 zone_id = user_input["zone_to_delete"]
                 del self.zones[zone_id]
@@ -228,40 +237,29 @@ class VacuumZonesOptionsFlowHandler(config_entries.OptionsFlow):
             errors=errors,
         )
 
-    async def async_step_edit_zone(self, zone_id, user_input=None) -> FlowResult:
+    async def async_step_edit_zone(self, user_input=None) -> FlowResult:
         """Handle editing an existing zone."""
         errors = {}
-        zone_config = self.zones[zone_id]
-
-        if user_input is not None:
-            new_zone_name = user_input[CONF_NAME]
-            new_zone_id = new_zone_name.lower().replace(" ", "_")
-            
-            if new_zone_id != zone_id and new_zone_id in self.zones:
-                errors[CONF_NAME] = "zone_exists"
-            else:
-                # Обновляем конфигурацию зоны
-                zone_config[CONF_NAME] = new_zone_name
-                zone_config[CONF_ROOM_ID] = user_input.get(CONF_ROOM_ID, "")
-                zone_config[CONF_REPEATS] = user_input.get(CONF_REPEATS, 1)
-
-                # Если ID изменился, переименовываем зону
-                if new_zone_id != zone_id:
-                    self.zones[new_zone_id] = zone_config
-                    del self.zones[zone_id]
-
-                return await self.async_step_init()
-
-        # Получаем список всех зон из Home Assistant areas
-        available_zones = await get_available_zones(self.hass)
-
-        return self.async_show_form(
-            step_id="edit_zone",
-            data_schema=vol.Schema({
-                vol.Required(CONF_NAME, default=zone_config.get(CONF_NAME, zone_id)): vol.In(available_zones),
-                vol.Optional(CONF_ROOM_ID, default=zone_config.get(CONF_ROOM_ID, "")): str,
-                vol.Optional(CONF_REPEATS, default=zone_config.get(CONF_REPEATS, 1)): vol.All(int, vol.Range(min=1, max=10)),
-            }),
-            errors=errors,
-        )
+        
+        # Обрабатываем результат формы редактирования
+        if user_input is not None and CONF_REPEATS in user_input:
+            zone_config = self.zones[self._edit_zone_id]
+            zone_config[CONF_REPEATS] = user_input.get(CONF_REPEATS, 1)
+            delattr(self, "_edit_zone_id")
+            return await self.async_step_init()
+        
+        # Показываем форму редактирования
+        if hasattr(self, "_edit_zone_id"):
+            zone_config = self.zones[self._edit_zone_id]
+            return self.async_show_form(
+                step_id="edit_zone",
+                data_schema=vol.Schema({
+                    vol.Required(CONF_REPEATS, default=zone_config.get(CONF_REPEATS, 1)): vol.All(int, vol.Range(min=1, max=10)),
+                }),
+                description_placeholders={
+                    "zone_name": zone_config.get(CONF_NAME, self._edit_zone_id),
+                    "room_id": zone_config.get(CONF_ROOM_ID, "N/A"),
+                },
+                errors=errors,
+            )
 
