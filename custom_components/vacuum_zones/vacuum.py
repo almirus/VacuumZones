@@ -151,6 +151,26 @@ class ZoneVacuum(StateVacuumEntity):
     def vacuum_entity_id(self) -> str:
         return self.service_data[ATTR_ENTITY_ID]
 
+    @property
+    def activity(self):  # HA 2026.1+
+        """Return current activity using VacuumActivity enum when available.
+
+        Сохраняет совместимость со старыми версиями HA, где enum отсутствует.
+        """
+        # Если константы являются строками (старые версии HA), просто не объявляем activity
+        if isinstance(STATE_CLEANING, str):
+            return None
+
+        # На новых версиях константы уже являются VacuumActivity
+        current = self._attr_state
+        if current == STATE_CLEANING:
+            return STATE_CLEANING
+        if current == STATE_RETURNING:
+            return STATE_RETURNING
+        if current == STATE_DOCKED:
+            return STATE_DOCKED
+        return None
+
     async def async_added_to_hass(self):
         # init start script
         if sequence := self.service_data.pop(CONF_SEQUENCE, None):
@@ -169,7 +189,7 @@ class ZoneVacuum(StateVacuumEntity):
         if goto := self.service_data.pop("goto", None):
             self.service_data["x_coord"] = goto[0]
             self.service_data["y_coord"] = goto[1]
-
+        print(f"[VacuumZones DEBUG] ",self.service_data)
         if "segments" in self.service_data:
             # "xiaomi_miio", "dreame_vacuum", "roborock"
             self.service = "vacuum_clean_segment"

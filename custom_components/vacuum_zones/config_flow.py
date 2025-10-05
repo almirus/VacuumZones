@@ -6,10 +6,24 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_ENTITY_ID, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import entity_registry, selector
+from homeassistant.helpers import entity_registry
+from homeassistant.helpers.selector import selector
 import homeassistant.helpers.config_validation as cv
 
-from .const import DOMAIN, CONF_ZONES, CONF_ROOM_NAME, CONF_ROOM_ID, CONF_REPEATS, DEFAULT_ROOMS
+from .const import (
+    DOMAIN,
+    CONF_ZONES,
+    CONF_ROOM_NAME,
+    CONF_ROOM_ID,
+
+    DEFAULT_ROOMS,
+    CONF_CLEAN_TIMES,
+    CONF_FAN_LEVEL,
+    CONF_WATER_LEVEL,
+    CONF_CLEAN_MODE,
+    CONF_MOP_MODE,
+    CONF_ON,
+)
 
 
 async def get_available_zones(hass):
@@ -83,9 +97,9 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({
-                vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="vacuum")
-                ),
+                vol.Required(CONF_ENTITY_ID): selector({
+                    "entity": {"domain": "vacuum"}
+                }),
             }),
             errors=errors,
         )
@@ -107,10 +121,19 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if CONF_ZONES not in self.data:
                     self.data[CONF_ZONES] = {}
                 
+                # Собираем конфиг комнаты с дополнительными параметрами
                 self.data[CONF_ZONES][zone_id] = {
                     CONF_NAME: zone_name,
                     CONF_ROOM_ID: user_input.get(CONF_ROOM_ID, ""),
-                    CONF_REPEATS: user_input.get(CONF_REPEATS, 1)
+                    # clean_times = repeats (1..2)
+
+                    CONF_CLEAN_TIMES: int(user_input.get(CONF_CLEAN_TIMES, 1)),
+                    # Доп. параметры
+                    CONF_FAN_LEVEL: int(user_input.get(CONF_FAN_LEVEL, 2)),
+                    CONF_WATER_LEVEL: int(user_input.get(CONF_WATER_LEVEL, 1)),
+                    CONF_CLEAN_MODE: int(user_input.get(CONF_CLEAN_MODE, 1)),
+                    CONF_MOP_MODE: int(user_input.get(CONF_MOP_MODE, 0)),
+                    CONF_ON: user_input.get(CONF_ON, True),
                 }
                 
                 # После добавления зоны завершаем конфигурацию
@@ -135,7 +158,64 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({
                 vol.Required(CONF_NAME): vol.In(available_zones) if available_zones else str,
                 vol.Optional(CONF_ROOM_ID, default=""): str,
-                vol.Optional(CONF_REPEATS, default=1): vol.All(int, vol.Range(min=1, max=10)),
+                # Количество повторов уборки (1 или 2)
+                vol.Required(CONF_CLEAN_TIMES, default="1"): selector({
+                    "select": {
+                        "options": [
+                            {"label": "1", "value": "1"},
+                            {"label": "2", "value": "2"}
+                        ],
+                        "mode": "dropdown"
+                    }
+                }),
+                # Уровень всасывания
+                vol.Optional(CONF_FAN_LEVEL, default="2"): selector({
+                    "select": {
+                        "options": [
+                            {"label": "1 — Бесшумный", "value": "1"},
+                            {"label": "2 — Стандартный", "value": "2"},
+                            {"label": "3 — Интенсивный", "value": "3"},
+                            {"label": "4 — Турбо", "value": "4"}
+                        ],
+                        "mode": "dropdown"
+                    }
+                }),
+                # Уровень воды
+                vol.Optional(CONF_WATER_LEVEL, default="1"): selector({
+                    "select": {
+                        "options": [
+                            {"label": "0 — Выкл", "value": "0"},
+                            {"label": "1", "value": "1"},
+                            {"label": "2", "value": "2"},
+                            {"label": "3", "value": "3"}
+                        ],
+                        "mode": "dropdown"
+                    }
+                }),
+                # Режим уборки
+                vol.Optional(CONF_CLEAN_MODE, default="1"): selector({
+                    "select": {
+                        "options": [
+                            {"label": "1 — Уборка пыли", "value": "1"},
+                            {"label": "2 — Пыль + влажная", "value": "2"},
+                            {"label": "3 — Пыль перед влажной", "value": "3"},
+                            {"label": "4 — Влажная", "value": "4"}
+                        ],
+                        "mode": "dropdown"
+                    }
+                }),
+                # Режим мытья пола (mop_mode): 0 или 1
+                vol.Optional(CONF_MOP_MODE, default="0"): selector({
+                    "select": {
+                        "options": [
+                            {"label": "0", "value": "0"},
+                            {"label": "1", "value": "1"}
+                        ],
+                        "mode": "dropdown"
+                    }
+                }),
+                # Включена ли уборка в комнате
+                vol.Optional(CONF_ON, default=True): bool,
             }),
             errors=errors,
         )
@@ -165,12 +245,69 @@ class VacuumZonesOptionsFlowHandler(config_entries.OptionsFlow):
                 zone_id = user_input["zone_to_edit"]
                 # Сохраняем zone_id для редактирования
                 self._edit_zone_id = zone_id
-                # Показываем форму редактирования сразу
+                # Показываем форму редактирования сразу (без имени комнаты)
                 zone_config = self.zones[zone_id]
                 return self.async_show_form(
                     step_id="edit_zone",
                     data_schema=vol.Schema({
-                        vol.Required(CONF_REPEATS, default=zone_config.get(CONF_REPEATS, 1)): vol.All(int, vol.Range(min=1, max=10)),
+                        # clean_times (1/2)
+                        vol.Required(CONF_CLEAN_TIMES, default=str(zone_config.get(CONF_CLEAN_TIMES, zone_config.get(CONF_CLEAN_TIMES, 1)))): selector({
+                            "select": {
+                                "options": [
+                                    {"label": "1", "value": "1"},
+                                    {"label": "2", "value": "2"}
+                                ],
+                                "mode": "dropdown"
+                            }
+                        }),
+                        # fan_level
+                        vol.Optional(CONF_FAN_LEVEL, default=str(zone_config.get(CONF_FAN_LEVEL, 2))): selector({
+                            "select": {
+                                "options": [
+                                    {"label": "1 — Бесшумный", "value": "1"},
+                                    {"label": "2 — Стандартный", "value": "2"},
+                                    {"label": "3 — Интенсивный", "value": "3"},
+                                    {"label": "4 — Турбо", "value": "4"}
+                                ],
+                                "mode": "dropdown"
+                            }
+                        }),
+                        # water_level
+                        vol.Optional(CONF_WATER_LEVEL, default=str(zone_config.get(CONF_WATER_LEVEL, 1))): selector({
+                            "select": {
+                                "options": [
+                                    {"label": "0 — Выкл", "value": "0"},
+                                    {"label": "1", "value": "1"},
+                                    {"label": "2", "value": "2"},
+                                    {"label": "3", "value": "3"}
+                                ],
+                                "mode": "dropdown"
+                            }
+                        }),
+                        # clean_mode
+                        vol.Optional(CONF_CLEAN_MODE, default=str(zone_config.get(CONF_CLEAN_MODE, 1))): selector({
+                            "select": {
+                                "options": [
+                                    {"label": "1 — Уборка пыли", "value": "1"},
+                                    {"label": "2 — Пыль + влажная", "value": "2"},
+                                    {"label": "3 — Пыль перед влажной", "value": "3"},
+                                    {"label": "4 — Влажная", "value": "4"}
+                                ],
+                                "mode": "dropdown"
+                            }
+                        }),
+                        # mop_mode
+                        vol.Optional(CONF_MOP_MODE, default=str(zone_config.get(CONF_MOP_MODE, 0))): selector({
+                            "select": {
+                                "options": [
+                                    {"label": "0", "value": "0"},
+                                    {"label": "1", "value": "1"}
+                                ],
+                                "mode": "dropdown"
+                            }
+                        }),
+                        # on
+                        vol.Optional(CONF_ON, default=bool(zone_config.get(CONF_ON, True))): bool,
                     }),
                     description_placeholders={
                         "zone_name": zone_config.get(CONF_NAME, zone_id),
@@ -188,7 +325,7 @@ class VacuumZonesOptionsFlowHandler(config_entries.OptionsFlow):
         # Показываем список текущих зон
         zones_list = []
         for zone_id, zone_config in self.zones.items():
-            zones_list.append(f"{zone_config.get(CONF_NAME, zone_id)} (ID: {zone_config.get(CONF_ROOM_ID, 'N/A')}, Повторений: {zone_config.get(CONF_REPEATS, 1)})")
+            zones_list.append(f"{zone_config.get(CONF_NAME, zone_id)} (ID: {zone_config.get(CONF_ROOM_ID, 'N/A')}, Повторений: {zone_config.get(CONF_CLEAN_TIMES, 1)})")
 
         return self.async_show_form(
             step_id="init",
@@ -220,7 +357,7 @@ class VacuumZonesOptionsFlowHandler(config_entries.OptionsFlow):
                 self.zones[zone_id] = {
                     CONF_NAME: zone_name,
                     CONF_ROOM_ID: user_input.get(CONF_ROOM_ID, ""),
-                    CONF_REPEATS: user_input.get(CONF_REPEATS, 1)
+                    CONF_CLEAN_TIMES: user_input.get(CONF_CLEAN_TIMES, 1)
                 }
                 return await self.async_step_init()
 
@@ -232,7 +369,7 @@ class VacuumZonesOptionsFlowHandler(config_entries.OptionsFlow):
             data_schema=vol.Schema({
                 vol.Required(CONF_NAME): vol.In(available_zones),
                 vol.Optional(CONF_ROOM_ID, default=""): str,
-                vol.Optional(CONF_REPEATS, default=1): vol.All(int, vol.Range(min=1, max=10)),
+                vol.Optional(CONF_CLEAN_TIMES, default=1): vol.All(int, vol.Range(min=1, max=10)),
             }),
             errors=errors,
         )
@@ -242,24 +379,19 @@ class VacuumZonesOptionsFlowHandler(config_entries.OptionsFlow):
         errors = {}
         
         # Обрабатываем результат формы редактирования
-        if user_input is not None and CONF_REPEATS in user_input:
+        if user_input is not None and (CONF_CLEAN_TIMES in user_input or CONF_ON in user_input):
             zone_config = self.zones[self._edit_zone_id]
-            zone_config[CONF_REPEATS] = user_input.get(CONF_REPEATS, 1)
+            # Обновляем значения (конвертируем строки в int)
+            clean_times = int(user_input.get(CONF_CLEAN_TIMES, zone_config.get(CONF_CLEAN_TIMES, zone_config.get(CONF_CLEAN_TIMES, 1))))
+            zone_config[CONF_CLEAN_TIMES] = clean_times
+            zone_config[CONF_FAN_LEVEL] = int(user_input.get(CONF_FAN_LEVEL, zone_config.get(CONF_FAN_LEVEL, 2)))
+            zone_config[CONF_WATER_LEVEL] = int(user_input.get(CONF_WATER_LEVEL, zone_config.get(CONF_WATER_LEVEL, 1)))
+            zone_config[CONF_CLEAN_MODE] = int(user_input.get(CONF_CLEAN_MODE, zone_config.get(CONF_CLEAN_MODE, 1)))
+            zone_config[CONF_MOP_MODE] = int(user_input.get(CONF_MOP_MODE, zone_config.get(CONF_MOP_MODE, 0)))
+            zone_config[CONF_ON] = bool(user_input.get(CONF_ON, zone_config.get(CONF_ON, True)))
             delattr(self, "_edit_zone_id")
             return await self.async_step_init()
         
-        # Показываем форму редактирования
-        if hasattr(self, "_edit_zone_id"):
-            zone_config = self.zones[self._edit_zone_id]
-            return self.async_show_form(
-                step_id="edit_zone",
-                data_schema=vol.Schema({
-                    vol.Required(CONF_REPEATS, default=zone_config.get(CONF_REPEATS, 1)): vol.All(int, vol.Range(min=1, max=10)),
-                }),
-                description_placeholders={
-                    "zone_name": zone_config.get(CONF_NAME, self._edit_zone_id),
-                    "room_id": zone_config.get(CONF_ROOM_ID, "N/A"),
-                },
-                errors=errors,
-            )
+        # Если по какой-то причине пришли без _edit_zone_id — вернемся на init
+        return await self.async_step_init()
 

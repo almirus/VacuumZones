@@ -7,7 +7,15 @@ DOMAIN = "vacuum_zones"
 CONF_ZONES = "zones"
 CONF_ROOM_NAME = "room_name"
 CONF_ROOM_ID = "room_id"
-CONF_REPEATS = "repeats"
+
+
+# Дополнительные параметры комнаты
+CONF_CLEAN_TIMES = "clean_times"
+CONF_FAN_LEVEL = "fan_level"
+CONF_WATER_LEVEL = "water_level"
+CONF_CLEAN_MODE = "clean_mode"
+CONF_MOP_MODE = "mop_mode"
+CONF_ON = "on"
 
 # Стандартные комнаты для fallback
 DEFAULT_ROOMS = [
