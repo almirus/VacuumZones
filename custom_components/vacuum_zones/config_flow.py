@@ -153,6 +153,22 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         print(f"[VacuumZones DEBUG] Доступные зоны после фильтрации: {available_zones}")
 
         print(f"[VacuumZones DEBUG] Показываем форму add_zone")
+
+        # Подсказка из room_info (если доступна)
+        rooms_hint = ""
+        try:
+            if self.room_info and isinstance(self.room_info, dict):
+                room_attrs = self.room_info.get("room_attrs", [])
+                if len(room_attrs) > 1:
+                    lines = ["Доступные комнаты в пылесосе:"]
+                    for row in room_attrs[1:]:
+                        if isinstance(row, (list, tuple)) and len(row) >= 2:
+                            rid, rname = row[0], row[1]
+                            lines.append(f"• ID: {rid}, Название: {rname}")
+                    rooms_hint = "\n".join(lines)
+        except Exception as e:
+            print(f"[VacuumZones DEBUG] Ошибка формирования rooms_hint: {e}")
+
         return self.async_show_form(
             step_id="add_zone",
             data_schema=vol.Schema({
@@ -197,9 +213,9 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "select": {
                         "options": [
                             {"label": "1 — Уборка пыли", "value": "1"},
-                            {"label": "2 — Пыль + влажная", "value": "2"},
-                            {"label": "3 — Пыль перед влажной", "value": "3"},
-                            {"label": "4 — Влажная", "value": "4"}
+                            {"label": "3 — Пыль + влажная", "value": "3"},
+                            {"label": "4 — Пыль перед влажной", "value": "4"},
+                            {"label": "2 — Влажная", "value": "2"}
                         ],
                         "mode": "dropdown"
                     }
@@ -218,6 +234,7 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_ON, default=True): bool,
             }),
             errors=errors,
+            description_placeholders={"rooms_hint": rooms_hint},
         )
 
 
@@ -289,9 +306,9 @@ class VacuumZonesOptionsFlowHandler(config_entries.OptionsFlow):
                             "select": {
                                 "options": [
                                     {"label": "1 — Уборка пыли", "value": "1"},
-                                    {"label": "2 — Пыль + влажная", "value": "2"},
-                                    {"label": "3 — Пыль перед влажной", "value": "3"},
-                                    {"label": "4 — Влажная", "value": "4"}
+                                    {"label": "3 — Пыль + влажная", "value": "3"},
+                                    {"label": "4 — Пыль перед влажной", "value": "4"},
+                                    {"label": "2 — Влажная", "value": "2"}
                                 ],
                                 "mode": "dropdown"
                             }

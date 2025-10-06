@@ -6,6 +6,7 @@ from homeassistant.components.vacuum import (
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.const import (
     CONF_SEQUENCE,
+    CONF_NAME,
     STATE_IDLE,
     STATE_PAUSED,
     EVENT_STATE_CHANGED,
@@ -18,7 +19,17 @@ from homeassistant.config_entries import ConfigEntry
 import json
 import yaml
 
-from .const import DOMAIN, CONF_ZONES
+from .const import (
+    DOMAIN,
+    CONF_ZONES,
+    CONF_ROOM_ID,
+    CONF_CLEAN_TIMES,
+    CONF_FAN_LEVEL,
+    CONF_WATER_LEVEL,
+    CONF_CLEAN_MODE,
+    CONF_MOP_MODE,
+    CONF_ON,
+)
 
 
 try:
@@ -201,6 +212,38 @@ class ZoneVacuum(StateVacuumEntity):
         elif "x_coord" in self.service_data and "y_coord" in self.service_data:
             # "xiaomi_miio", "roborock"
             self.service = "vacuum_goto"
+        elif "clean_times" in self.service_data:
+            # "NEW xiaomi_miio" — формируем параметры для call_action
+            self.service = "call_action"
+            # Вызов должен идти в домен xiaomi_miot
+            self.domain = "xiaomi_miot"
+            room_id_val = self.service_data.get(CONF_ROOM_ID)
+            try:
+                room_id_int = int(room_id_val) if room_id_val not in (None, "") else 0
+            except (TypeError, ValueError):
+                room_id_int = 0
+
+            room_attrs_payload = {
+                "room_attrs": [
+                    {
+                        "id": room_id_int,
+                        "room_name": self._attr_name or self.service_data.get(CONF_NAME, ""),
+                        "fan_level": int(self.service_data.get(CONF_FAN_LEVEL, 2)),
+                        "water_level": int(self.service_data.get(CONF_WATER_LEVEL, 1)),
+                        "clean_mode": int(self.service_data.get(CONF_CLEAN_MODE, 1)),
+                        "clean_times": int(self.service_data.get(CONF_CLEAN_TIMES, 1)),
+                        "mop_mode": int(self.service_data.get(CONF_MOP_MODE, 0)),
+                        "on": bool(self.service_data.get(CONF_ON, True)),
+                    }
+                ]
+            }
+            json_str = json.dumps(room_attrs_payload, ensure_ascii=False)
+            self.service_data = {
+                ATTR_ENTITY_ID: self.vacuum_entity_id,
+                "siid": 2,
+                "aiid": 10,
+                "params": json_str,
+            }
 
     async def internal_start(self, context: Context) -> None:
         self._attr_state = STATE_CLEANING
@@ -208,11 +251,19 @@ class ZoneVacuum(StateVacuumEntity):
 
         if self.script:
             await self.script.async_run(context=context)
-
+        print(f"[VacuumZones DEBUG] Вызываем {self.domain} {self.service}: {self.service_data}")
         if self.service:
-            await self.hass.services.async_call(
-                self.domain, self.service, self.service_data, True
-            )
+            try:
+                result = await self.hass.services.async_call(
+                    self.domain, self.service, self.service_data, True
+                )
+                print(
+                    f"[VacuumZones DEBUG] Ответ сервиса {self.domain}.{self.service}: {result}"
+                )
+            except Exception as e:
+                print(
+                    f"[VacuumZones DEBUG] Ошибка вызова {self.domain}.{self.service}: {e}"
+                )
 
     async def internal_stop(self):
         self._attr_state = STATE_IDLE
