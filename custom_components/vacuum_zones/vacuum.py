@@ -149,11 +149,13 @@ class ZoneVacuum(StateVacuumEntity):
         self.service_data: dict = config | {ATTR_ENTITY_ID: entity_id}
         self.queue = queue
         # Добавляем уникальный идентификатор для возможности управления через UI
-        self._attr_unique_id = f"{entity_id}_{name.lower().replace(' ', '_')}"
-        # Добавляем информацию об устройстве
+        zone_slug = name.lower().replace(" ", "_")
+        self._attr_unique_id = f"{entity_id}_{zone_slug}"
+        # Каждая зона должна быть отдельным устройством, иначе смена area применяется ко всем
+        device_identifier = f"{entity_id}_{zone_slug}"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, entity_id)},
-            name=f"Vacuum Zones - {entity_id}",
+            identifiers={(DOMAIN, device_identifier)},
+            name=f"Vacuum Zones - {name}",
             manufacturer="VacuumZones",
             model="Zone Controller",
         )

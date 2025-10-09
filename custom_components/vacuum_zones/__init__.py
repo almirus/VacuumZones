@@ -44,10 +44,16 @@ async def async_setup(hass: HomeAssistant, config: dict):
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Vacuum Zones from a config entry."""
-    await hass.config_entries.async_forward_entry_setups(entry, ["vacuum"])
+    await hass.config_entries.async_forward_entry_setups(entry, ["vacuum", "select", "switch"])
 
     async def _update_listener(hass: HomeAssistant, updated_entry: ConfigEntry) -> None:
-        # При изменении конфигурации перезагружаем платформу, чтобы обновить service_data
+        # Если опции заполнены — переносим их в data, чтобы платформа читала актуальные значения
+        if updated_entry.options:
+            # Обновляем запись: переносим options -> data и очищаем options
+            hass.config_entries.async_update_entry(
+                updated_entry, data=dict(updated_entry.options), options={}
+            )
+        # Перезагружаем платформу, чтобы обновить service_data
         await hass.config_entries.async_reload(updated_entry.entry_id)
 
     # Регистрируем слушатель обновлений

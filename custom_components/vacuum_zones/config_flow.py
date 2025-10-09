@@ -23,6 +23,8 @@ from .const import (
     CONF_CLEAN_MODE,
     CONF_MOP_MODE,
     CONF_ON,
+    VALUE_TO_LABEL,
+    PARAM_TO_NAME,
 )
 
 
@@ -35,10 +37,6 @@ async def get_available_zones(hass):
         areas = ar.async_list_areas()
         available_zones = [area.name for area in areas if area.name]
         
-        # Отладочная информация
-        print(f"[VacuumZones DEBUG] Получено areas: {len(areas)}")
-        print(f"[VacuumZones DEBUG] Названия areas: {[area.name for area in areas]}")
-        print(f"[VacuumZones DEBUG] Доступные зоны: {available_zones}")
         
         if not available_zones:
             print(f"[VacuumZones DEBUG] Список зон пустой, используем DEFAULT_ROOMS")
@@ -91,7 +89,6 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         print(f"[VacuumZones DEBUG] vacuum_extend.room_info не найден")
                         self.room_info = None
                 
-                print(f"[VacuumZones DEBUG] Переходим к async_step_add_zone")
                 return await self.async_step_add_zone()
 
         return self.async_show_form(
@@ -138,12 +135,11 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 
                 # После добавления зоны завершаем конфигурацию
                 return self.async_create_entry(
-                    title=f"Vacuum Zones - {self.data[CONF_ENTITY_ID]}",
+                    title=f"{zone_name} - Виртуальный пылесос - {self.data[CONF_ENTITY_ID]}",
                     data=self.data,
                 )
 
         # Получаем список всех зон из Home Assistant areas
-        print(f"[VacuumZones DEBUG] Получаем доступные зоны...")
         available_zones = await get_available_zones(self.hass)
         print(f"[VacuumZones DEBUG] Получены зоны: {available_zones}")
         
@@ -151,8 +147,6 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         existing_zones = self.data.get(CONF_ZONES, {}).keys()
         available_zones = [zone for zone in available_zones if zone.lower().replace(" ", "_") not in existing_zones]
         print(f"[VacuumZones DEBUG] Доступные зоны после фильтрации: {available_zones}")
-
-        print(f"[VacuumZones DEBUG] Показываем форму add_zone")
 
         # Подсказка из room_info (если доступна)
         rooms_hint = ""
@@ -172,66 +166,45 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="add_zone",
             data_schema=vol.Schema({
-                vol.Required(CONF_NAME): vol.In(available_zones) if available_zones else str,
-                vol.Optional(CONF_ROOM_ID, default=""): str,
+                vol.Required(CONF_NAME, description="Название комнаты"): vol.In(available_zones) if available_zones else str,
+                vol.Required(CONF_ROOM_ID, default="", description="ID комнаты в пылесосе"): str,
                 # Количество повторов уборки (1 или 2)
-                vol.Required(CONF_CLEAN_TIMES, default="1"): selector({
+                vol.Required(CONF_CLEAN_TIMES, default="1", description=PARAM_TO_NAME[CONF_CLEAN_TIMES]): selector({
                     "select": {
-                        "options": [
-                            {"label": "1", "value": "1"},
-                            {"label": "2", "value": "2"}
-                        ],
+                        "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_CLEAN_TIMES].items()],
                         "mode": "dropdown"
                     }
                 }),
                 # Уровень всасывания
-                vol.Optional(CONF_FAN_LEVEL, default="2"): selector({
+                vol.Optional(CONF_FAN_LEVEL, default="2", description=PARAM_TO_NAME[CONF_FAN_LEVEL]): selector({
                     "select": {
-                        "options": [
-                            {"label": "1 — Бесшумный", "value": "1"},
-                            {"label": "2 — Стандартный", "value": "2"},
-                            {"label": "3 — Интенсивный", "value": "3"},
-                            {"label": "4 — Турбо", "value": "4"}
-                        ],
+                        "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_FAN_LEVEL].items()],
                         "mode": "dropdown"
                     }
                 }),
                 # Уровень воды
-                vol.Optional(CONF_WATER_LEVEL, default="1"): selector({
+                vol.Optional(CONF_WATER_LEVEL, default="1", description=PARAM_TO_NAME[CONF_WATER_LEVEL]): selector({
                     "select": {
-                        "options": [
-                            {"label": "0 — Выкл", "value": "0"},
-                            {"label": "1", "value": "1"},
-                            {"label": "2", "value": "2"},
-                            {"label": "3", "value": "3"}
-                        ],
+                        "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_WATER_LEVEL].items()],
                         "mode": "dropdown"
                     }
                 }),
                 # Режим уборки
-                vol.Optional(CONF_CLEAN_MODE, default="1"): selector({
+                vol.Optional(CONF_CLEAN_MODE, default="1", description=PARAM_TO_NAME[CONF_CLEAN_MODE]): selector({
                     "select": {
-                        "options": [
-                            {"label": "1 — Уборка пыли", "value": "1"},
-                            {"label": "3 — Пыль + влажная", "value": "3"},
-                            {"label": "4 — Пыль перед влажной", "value": "4"},
-                            {"label": "2 — Влажная", "value": "2"}
-                        ],
+                        "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_CLEAN_MODE].items()],
                         "mode": "dropdown"
                     }
                 }),
                 # Режим мытья пола (mop_mode): 0 или 1
-                vol.Optional(CONF_MOP_MODE, default="0"): selector({
+                vol.Optional(CONF_MOP_MODE, default="0", description=PARAM_TO_NAME[CONF_MOP_MODE]): selector({
                     "select": {
-                        "options": [
-                            {"label": "0", "value": "0"},
-                            {"label": "1", "value": "1"}
-                        ],
+                        "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_MOP_MODE].items()],
                         "mode": "dropdown"
                     }
                 }),
                 # Включена ли уборка в комнате
-                vol.Optional(CONF_ON, default=True): bool,
+                vol.Optional(CONF_ON, default=True, description=PARAM_TO_NAME[CONF_ON]): bool,
             }),
             errors=errors,
             description_placeholders={"rooms_hint": rooms_hint},
@@ -268,63 +241,42 @@ class VacuumZonesOptionsFlowHandler(config_entries.OptionsFlow):
                     step_id="edit_zone",
                     data_schema=vol.Schema({
                         # clean_times (1/2)
-                        vol.Required(CONF_CLEAN_TIMES, default=str(zone_config.get(CONF_CLEAN_TIMES, zone_config.get(CONF_CLEAN_TIMES, 1)))): selector({
+                        vol.Required(CONF_CLEAN_TIMES, default=str(zone_config.get(CONF_CLEAN_TIMES, zone_config.get(CONF_CLEAN_TIMES, 1))), description=PARAM_TO_NAME[CONF_CLEAN_TIMES]): selector({
                             "select": {
-                                "options": [
-                                    {"label": "1", "value": "1"},
-                                    {"label": "2", "value": "2"}
-                                ],
+                                "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_CLEAN_TIMES].items()],
                                 "mode": "dropdown"
                             }
                         }),
                         # fan_level
-                        vol.Optional(CONF_FAN_LEVEL, default=str(zone_config.get(CONF_FAN_LEVEL, 2))): selector({
+                        vol.Optional(CONF_FAN_LEVEL, default=str(zone_config.get(CONF_FAN_LEVEL, 2)), description=PARAM_TO_NAME[CONF_FAN_LEVEL]): selector({
                             "select": {
-                                "options": [
-                                    {"label": "1 — Бесшумный", "value": "1"},
-                                    {"label": "2 — Стандартный", "value": "2"},
-                                    {"label": "3 — Интенсивный", "value": "3"},
-                                    {"label": "4 — Турбо", "value": "4"}
-                                ],
+                                "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_FAN_LEVEL].items()],
                                 "mode": "dropdown"
                             }
                         }),
                         # water_level
-                        vol.Optional(CONF_WATER_LEVEL, default=str(zone_config.get(CONF_WATER_LEVEL, 1))): selector({
+                        vol.Optional(CONF_WATER_LEVEL, default=str(zone_config.get(CONF_WATER_LEVEL, 1)), description=PARAM_TO_NAME[CONF_WATER_LEVEL]): selector({
                             "select": {
-                                "options": [
-                                    {"label": "0 — Выкл", "value": "0"},
-                                    {"label": "1", "value": "1"},
-                                    {"label": "2", "value": "2"},
-                                    {"label": "3", "value": "3"}
-                                ],
+                                "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_WATER_LEVEL].items()],
                                 "mode": "dropdown"
                             }
                         }),
                         # clean_mode
-                        vol.Optional(CONF_CLEAN_MODE, default=str(zone_config.get(CONF_CLEAN_MODE, 1))): selector({
+                        vol.Optional(CONF_CLEAN_MODE, default=str(zone_config.get(CONF_CLEAN_MODE, 1)), description=PARAM_TO_NAME[CONF_CLEAN_MODE]): selector({
                             "select": {
-                                "options": [
-                                    {"label": "1 — Уборка пыли", "value": "1"},
-                                    {"label": "3 — Пыль + влажная", "value": "3"},
-                                    {"label": "4 — Пыль перед влажной", "value": "4"},
-                                    {"label": "2 — Влажная", "value": "2"}
-                                ],
+                                "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_CLEAN_MODE].items()],
                                 "mode": "dropdown"
                             }
                         }),
                         # mop_mode
-                        vol.Optional(CONF_MOP_MODE, default=str(zone_config.get(CONF_MOP_MODE, 0))): selector({
+                        vol.Optional(CONF_MOP_MODE, default=str(zone_config.get(CONF_MOP_MODE, 0)), description=PARAM_TO_NAME[CONF_MOP_MODE]): selector({
                             "select": {
-                                "options": [
-                                    {"label": "0", "value": "0"},
-                                    {"label": "1", "value": "1"}
-                                ],
+                                "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_MOP_MODE].items()],
                                 "mode": "dropdown"
                             }
                         }),
                         # on
-                        vol.Optional(CONF_ON, default=bool(zone_config.get(CONF_ON, True))): bool,
+                        vol.Optional(CONF_ON, default=bool(zone_config.get(CONF_ON, True)), description=PARAM_TO_NAME[CONF_ON]): bool,
                     }),
                     description_placeholders={
                         "zone_name": zone_config.get(CONF_NAME, zone_id),
@@ -374,7 +326,12 @@ class VacuumZonesOptionsFlowHandler(config_entries.OptionsFlow):
                 self.zones[zone_id] = {
                     CONF_NAME: zone_name,
                     CONF_ROOM_ID: user_input.get(CONF_ROOM_ID, ""),
-                    CONF_CLEAN_TIMES: user_input.get(CONF_CLEAN_TIMES, 1)
+                    CONF_CLEAN_TIMES: int(user_input.get(CONF_CLEAN_TIMES, 1)),
+                    CONF_FAN_LEVEL: int(user_input.get(CONF_FAN_LEVEL, 2)),
+                    CONF_WATER_LEVEL: int(user_input.get(CONF_WATER_LEVEL, 1)),
+                    CONF_CLEAN_MODE: int(user_input.get(CONF_CLEAN_MODE, 1)),
+                    CONF_MOP_MODE: int(user_input.get(CONF_MOP_MODE, 0)),
+                    CONF_ON: bool(user_input.get(CONF_ON, True)),
                 }
                 return await self.async_step_init()
 
@@ -385,8 +342,44 @@ class VacuumZonesOptionsFlowHandler(config_entries.OptionsFlow):
             step_id="add_zone",
             data_schema=vol.Schema({
                 vol.Required(CONF_NAME): vol.In(available_zones),
-                vol.Optional(CONF_ROOM_ID, default=""): str,
-                vol.Optional(CONF_CLEAN_TIMES, default=1): vol.All(int, vol.Range(min=1, max=10)),
+                vol.Required(CONF_ROOM_ID, default=""): str,
+                # Количество повторов уборки (1 или 2)
+                vol.Required(CONF_CLEAN_TIMES, default="1"): selector({
+                    "select": {
+                        "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_CLEAN_TIMES].items()],
+                        "mode": "dropdown"
+                    }
+                }),
+                # Уровень всасывания
+                vol.Optional(CONF_FAN_LEVEL, default="2"): selector({
+                    "select": {
+                        "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_FAN_LEVEL].items()],
+                        "mode": "dropdown"
+                    }
+                }),
+                # Уровень воды
+                vol.Optional(CONF_WATER_LEVEL, default="1"): selector({
+                    "select": {
+                        "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_WATER_LEVEL].items()],
+                        "mode": "dropdown"
+                    }
+                }),
+                # Режим уборки
+                vol.Optional(CONF_CLEAN_MODE, default="1"): selector({
+                    "select": {
+                        "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_CLEAN_MODE].items()],
+                        "mode": "dropdown"
+                    }
+                }),
+                # Режим мытья пола (mop_mode): 0 или 1
+                vol.Optional(CONF_MOP_MODE, default="0"): selector({
+                    "select": {
+                        "options": [{"label": lbl, "value": val} for val, lbl in VALUE_TO_LABEL[CONF_MOP_MODE].items()],
+                        "mode": "dropdown"
+                    }
+                }),
+                # Включена ли уборка в комнате
+                vol.Optional(CONF_ON, default=True): bool,
             }),
             errors=errors,
         )
