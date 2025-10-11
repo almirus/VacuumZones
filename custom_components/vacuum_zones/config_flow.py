@@ -154,7 +154,7 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if self.room_info and isinstance(self.room_info, dict):
                 room_attrs = self.room_info.get("room_attrs", [])
                 if len(room_attrs) > 1:
-                    lines = ["Доступные комнаты в пылесосе:"]
+                    lines = ["Доступные комнаты из облака Xiaomi:"]
                     for row in room_attrs[1:]:
                         if isinstance(row, (list, tuple)) and len(row) >= 2:
                             rid, rname = row[0], row[1]
@@ -167,7 +167,7 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="add_zone",
             data_schema=vol.Schema({
                 vol.Required(CONF_NAME, description="Название комнаты"): vol.In(available_zones) if available_zones else str,
-                vol.Required(CONF_ROOM_ID, default="", description="ID комнаты в пылесосе"): str,
+                vol.Required(CONF_ROOM_ID, default="", description=PARAM_TO_NAME[CONF_ROOM_ID]): str,
                 # Количество повторов уборки (1 или 2)
                 vol.Required(CONF_CLEAN_TIMES, default="1", description=PARAM_TO_NAME[CONF_CLEAN_TIMES]): selector({
                     "select": {

@@ -74,7 +74,7 @@ class ZoneParamSelect(SelectEntity):
         self._zone_id = zone_id
         self._param = param
         order = PARAM_ORDER.get(param, "9")
-        self._attr_name = PARAM_TO_NAME[param]  # Используем человекочитаемое название
+        self._attr_name = PARAM_TO_NAME[param] 
         self._attr_options = options
         self._attr_current_option = value
         order = PARAM_ORDER.get(param, "9")

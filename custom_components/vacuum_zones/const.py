@@ -60,6 +60,7 @@ PARAM_TO_NAME = {
     CONF_CLEAN_TIMES: "Повторов уборки",
     CONF_MOP_MODE: "Режим мытья пола",
     CONF_ON: "Комната включена",
+    CONF_ROOM_ID: "ID комнаты",
 }
 
 # Автоматически генерируем PARAMS из VALUE_TO_LABEL

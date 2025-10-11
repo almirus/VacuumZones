@@ -239,13 +239,29 @@ class ZoneVacuum(StateVacuumEntity):
                     }
                 ]
             }
-            json_str = json.dumps(room_attrs_payload, ensure_ascii=False)
+            room_attrs_str = json.dumps(room_attrs_payload, ensure_ascii=False)
             self.service_data = {
                 ATTR_ENTITY_ID: self.vacuum_entity_id,
                 "siid": 2,
                 "aiid": 10,
-                "params": json_str,
-            }
+                "params": room_attrs_str,
+                }
+            # Вызываем сохранение параметров комнаты    
+            await self.hass.services.async_call(
+                            self.domain, self.service, self.service_data, True
+                        )
+            # Параметры для уборки комнаты            
+            room_for_clean = {
+                "room": [room_id_int]
+            }            
+            room_for_clean_str = json.dumps(room_for_clean, ensure_ascii=False)
+            self.service_data = {
+                ATTR_ENTITY_ID: self.vacuum_entity_id,
+                "siid": 2,
+                "aiid": 13,
+                "params": [room_for_clean_str],
+                }
+            
 
     async def internal_start(self, context: Context) -> None:
         self._attr_state = STATE_CLEANING
@@ -253,19 +269,15 @@ class ZoneVacuum(StateVacuumEntity):
 
         if self.script:
             await self.script.async_run(context=context)
-        print(f"[VacuumZones DEBUG] Вызываем {self.domain} {self.service}: {self.service_data}")
+  
         if self.service:
             try:
-                result = await self.hass.services.async_call(
-                    self.domain, self.service, self.service_data, True
-                )
-                print(
-                    f"[VacuumZones DEBUG] Ответ сервиса {self.domain}.{self.service}: {result}"
-                )
+                    await self.hass.services.async_call(
+                        self.domain, self.service, self.service_data, True
+                    )
+                    
             except Exception as e:
-                print(
-                    f"[VacuumZones DEBUG] Ошибка вызова {self.domain}.{self.service}: {e}"
-                )
+                print(f"[VacuumZones DEBUG] Ошибка вызова {self.domain}.{self.service}: {e}")
 
     async def internal_stop(self):
         self._attr_state = STATE_IDLE
@@ -273,10 +285,11 @@ class ZoneVacuum(StateVacuumEntity):
 
     async def async_start(self):
         self.queue.append(self)
-
+        print(f"[VacuumZones DEBUG] Запуск очереди {self.vacuum_entity_id}")
         state = self.hass.states.get(self.vacuum_entity_id)
         if len(self.queue) > 1 or state == STATE_CLEANING:
             self._attr_state = STATE_PAUSED
+            print(f"[VacuumZones DEBUG] Ставим на паузу {self.vacuum_entity_id}")
             self.async_write_ha_state()
             return
 
