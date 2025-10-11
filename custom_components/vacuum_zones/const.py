@@ -23,6 +23,7 @@ DEFAULT_ROOMS = [
     "Детская", "Кабинет", "Балкон", "Коридор", "Кладовка"
 ]
 
+# Базовые переводы (fallback для случаев, когда переводы недоступны)
 VALUE_TO_LABEL = {
     CONF_FAN_LEVEL: {
         "1": "1 — Бесшумный",
@@ -61,23 +62,17 @@ PARAM_TO_NAME = {
     CONF_ON: "Комната включена",
 }
 
+# Автоматически генерируем PARAMS из VALUE_TO_LABEL
+PARAMS = {param: list(values.keys()) for param, values in VALUE_TO_LABEL.items()}
 
-async def get_available_zones(hass):
-    """Получить список доступных зон из Home Assistant areas."""
-    try:
-        ar = area_registry.async_get(hass)
-        areas = ar.async_list_areas()
-        available_zones = [area.name for area in areas if area.name]
-        print(f"[VacuumZones DEBUG] Получено areas: {len(areas)}")
-        print(f"[VacuumZones DEBUG] Названия areas: {[area.name for area in areas]}")
-        print(f"[VacuumZones DEBUG] Доступные зоны: {available_zones}")
-        
-        if not available_zones:
-            print(f"[VacuumZones DEBUG] Используем DEFAULT_ROOMS")
-            return DEFAULT_ROOMS
-            
-        return available_zones
-    except Exception as e:
-        print(f"[VacuumZones DEBUG] Ошибка получения areas: {e}")
-        print(f"[VacuumZones DEBUG] Используем DEFAULT_ROOMS")
-        return DEFAULT_ROOMS
+# Порядок отображения параметров
+PARAM_ORDER = {
+    CONF_ZONES: "0",
+    CONF_CLEAN_TIMES: "1",
+    CONF_MOP_MODE: "2", 
+    CONF_CLEAN_MODE: "3",
+    CONF_FAN_LEVEL: "4",
+    CONF_WATER_LEVEL: "5",
+}
+
+

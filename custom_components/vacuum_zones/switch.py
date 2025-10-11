@@ -37,7 +37,7 @@ async def async_setup_entry(
 class ZoneOnSwitch(SwitchEntity):
     _attr_has_entity_name = True
     _attr_should_poll = False
-    _attr_name = PARAM_TO_NAME[CONF_ON]
+    _attr_name = PARAM_TO_NAME[CONF_ON]  # Используем человекочитаемое название
 
     def __init__(
         self,

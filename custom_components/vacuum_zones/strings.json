@@ -2,115 +2,115 @@
   "config": {
     "step": {
       "user": {
-        "title": "Настройка Vacuum Zones",
-        "description": "Выберите сущность пылесоса для создания зон уборки.",
+        "title": "Vacuum Zones Setup",
+        "description": "Select vacuum entity to create cleaning zones.",
         "data": {
-          "entity_id": "Сущность пылесоса"
+          "entity_id": "Vacuum Entity"
         }
       },
       "add_zone": {
-        "title": "Добавить зону",
+        "title": "Add Zone",
         "description": "{rooms_hint}",
         "data": {
-          "name": "Название зоны",
-          "room_id": "ID комнаты (опционально)",
-          "clean_times": "Количество повторений",
-          "fan_level": "Уровень всасывания",
-          "water_level": "Уровень воды",
-          "clean_mode": "Режим уборки",
-          "mop_mode": "Режим мытья пола (0/1)",
-          "on": "Убирать эту комнату"
+          "name": "Zone Name",
+          "room_id": "Room ID (optional)",
+          "clean_times": "Cleaning Repetitions",
+          "fan_level": "Suction Level",
+          "water_level": "Water Level",
+          "clean_mode": "Cleaning Mode",
+          "mop_mode": "Mopping Mode (0/1)",
+          "on": "Clean This Room"
         }
       }
     },
     "options": {
       "step": {
         "init": {
-          "title": "Настройки Vacuum Zones",
-          "description": "Управление зонами уборки для пылесоса: {entity_id}\n\nТекущие зоны:\n{zones_list}",
+          "title": "Vacuum Zones Settings",
+          "description": "Manage cleaning zones for vacuum: {entity_id}\n\nCurrent zones:\n{zones_list}",
           "data": {
-            "add_zone": "Добавить зону",
-            "zone_to_edit": "Зона для редактирования",
-            "edit_zone": "Редактировать зону",
-            "zone_to_delete": "Зона для удаления",
-            "delete_zone": "Удалить зону",
-            "finish": "Сохранить изменения"
+            "add_zone": "Add Zone",
+            "zone_to_edit": "Zone to Edit",
+            "edit_zone": "Edit Zone",
+            "zone_to_delete": "Zone to Delete",
+            "delete_zone": "Delete Zone",
+            "finish": "Save Changes"
           }
         },
         "add_zone": {
-          "title": "Добавить зону",
-          "description": "Настройте параметры новой зоны уборки.",
+          "title": "Add Zone",
+          "description": "Configure parameters for new cleaning zone.",
           "data": {
-            "name": "Название зоны",
-            "room_id": "ID комнаты (опционально)",
-            "clean_times": "Количество повторений",
-            "fan_level": "Уровень всасывания",
-            "water_level": "Уровень воды",
-            "clean_mode": "Режим уборки",
-            "mop_mode": "Режим мытья пола (0/1)",
-            "on": "Убирать эту комнату"
+            "name": "Zone Name",
+            "room_id": "Room ID (optional)",
+            "clean_times": "Cleaning Repetitions",
+            "fan_level": "Suction Level",
+            "water_level": "Water Level",
+            "clean_mode": "Cleaning Mode",
+            "mop_mode": "Mopping Mode (0/1)",
+            "on": "Clean This Room"
           }
         },
         "edit_zone": {
-          "title": "Редактировать зону",
-          "description": "Измените параметры зоны '{zone_name}' (ID комнаты: {room_id}).",
+          "title": "Edit Zone",
+          "description": "Change parameters for zone '{zone_name}' (Room ID: {room_id}).",
           "data": {
-            "clean_times": "Количество повторений",
-            "fan_level": "Уровень всасывания",
-            "water_level": "Уровень воды",
-            "clean_mode": "Режим уборки",
-            "mop_mode": "Режим мытья пола (0/1)",
-            "on": "Убирать эту комнату"
+            "clean_times": "Cleaning Repetitions",
+            "fan_level": "Suction Level",
+            "water_level": "Water Level",
+            "clean_mode": "Cleaning Mode",
+            "mop_mode": "Mopping Mode (0/1)",
+            "on": "Clean This Room"
           }
         }
       }
     },
     "error": {
-      "entity_not_found": "Сущность пылесоса не найдена",
-      "zone_exists": "Зона с таким названием уже существует"
+      "entity_not_found": "Vacuum entity not found",
+      "zone_exists": "Zone with this name already exists"
     },
     "abort": {
-      "already_configured": "Эта сущность уже настроена"
+      "already_configured": "This entity is already configured"
     }
   },
   "entity": {
     "select": {
       "fan_level": {
-        "name": "Уровень всасывания",
+        "name": "Suction Level",
         "state": {
-          "1": "1 — Бесшумный",
-          "2": "2 — Стандартный",
-          "3": "3 — Интенсивный",
-          "4": "4 — Турбо"
+          "1": "1 — Silent",
+          "2": "2 — Standard",
+          "3": "3 — Intensive",
+          "4": "4 — Turbo"
         }
       },
       "water_level": {
-        "name": "Уровень воды",
+        "name": "Water Level",
         "state": {
-          "0": "0 — Выкл",
+          "0": "0 — Off",
           "1": "1",
           "2": "2",
           "3": "3"
         }
       },
       "clean_mode": {
-        "name": "Режим уборки",
+        "name": "Cleaning Mode",
         "state": {
-          "1": "1 — Уборка пыли",
-          "3": "3 — Пыль + влажная",
-          "4": "4 — Пыль перед влажной",
-          "2": "2 — Влажная"
+          "1": "1 — Dust Cleaning",
+          "3": "3 — Dust + Wet",
+          "4": "4 — Dust Before Wet",
+          "2": "2 — Wet"
         }
       },
       "clean_times": {
-        "name": "Повторов уборки",
+        "name": "Cleaning Repetitions",
         "state": {
           "1": "1",
           "2": "2"
         }
       },
       "mop_mode": {
-        "name": "Режим мытья пола",
+        "name": "Mopping Mode",
         "state": {
           "0": "0",
           "1": "1"
@@ -119,7 +119,7 @@
     },
     "switch": {
       "on": {
-        "name": "Комната включена"
+        "name": "Room Enabled"
       }
     }
   }

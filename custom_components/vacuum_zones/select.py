@@ -15,25 +15,9 @@ from .const import (
     CONF_MOP_MODE,
     VALUE_TO_LABEL,
     PARAM_TO_NAME,
+    PARAMS,
+    PARAM_ORDER,
 )
-
-PARAMS = {
-    CONF_CLEAN_TIMES: ["1", "2"],
-    CONF_MOP_MODE: ["0", "1"],
-    CONF_CLEAN_MODE: ["1", "3", "4", "2"],
-    CONF_FAN_LEVEL: ["1", "2", "3", "4"],
-    CONF_WATER_LEVEL: ["0", "1", "2", "3"],
-}
-
-# Порядок отображения параметров
-PARAM_ORDER = {
-    CONF_CLEAN_TIMES: "1",
-    CONF_MOP_MODE: "2", 
-    CONF_CLEAN_MODE: "3",
-    CONF_FAN_LEVEL: "4",
-    CONF_WATER_LEVEL: "5",
-}
-
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -90,7 +74,7 @@ class ZoneParamSelect(SelectEntity):
         self._zone_id = zone_id
         self._param = param
         order = PARAM_ORDER.get(param, "9")
-        self._attr_name = f"{PARAM_TO_NAME[param]}"
+        self._attr_name = PARAM_TO_NAME[param]  # Используем человекочитаемое название
         self._attr_options = options
         self._attr_current_option = value
         order = PARAM_ORDER.get(param, "9")
