@@ -71,31 +71,46 @@ class VacuumZonesConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not entity_reg.async_get(user_input[CONF_ENTITY_ID]):
                 errors[CONF_ENTITY_ID] = "entity_not_found"
             else:
-                self.data[CONF_ENTITY_ID] = user_input[CONF_ENTITY_ID]
-                
-                # Получаем информацию о комнатах из атрибута пылеса
-                vacuum_state = self.hass.states.get(user_input[CONF_ENTITY_ID])
-                if vacuum_state:
-                    # Получаем атрибут vacuum_extend.room_info напрямую
-                    room_info_str = vacuum_state.attributes.get("vacuum_extend.room_info")
-                    if room_info_str:
-                        try:
-                            self.room_info = json.loads(room_info_str)
-                            print(f"[VacuumZones DEBUG] Получена информация о комнатах: {self.room_info}")
-                        except (json.JSONDecodeError, TypeError) as e:
-                            print(f"[VacuumZones DEBUG] Ошибка парсинга room_info: {e}")
+                # Дополнительная проверка: исключаем виртуальные пылесосы из vacuum_zones
+                entity_entry = entity_reg.async_get(user_input[CONF_ENTITY_ID])
+                if entity_entry and entity_entry.platform == 'vacuum_zones':
+                    errors[CONF_ENTITY_ID] = "virtual_vacuum_selected"
+                else:
+                    self.data[CONF_ENTITY_ID] = user_input[CONF_ENTITY_ID]
+                    
+                    # Получаем информацию о комнатах из атрибута пылеса
+                    vacuum_state = self.hass.states.get(user_input[CONF_ENTITY_ID])
+                    if vacuum_state:
+                        # Получаем атрибут vacuum_extend.room_info напрямую
+                        room_info_str = vacuum_state.attributes.get("vacuum_extend.room_info")
+                        if room_info_str:
+                            try:
+                                self.room_info = json.loads(room_info_str)
+                                print(f"[VacuumZones DEBUG] Получена информация о комнатах: {self.room_info}")
+                            except (json.JSONDecodeError, TypeError) as e:
+                                print(f"[VacuumZones DEBUG] Ошибка парсинга room_info: {e}")
+                                self.room_info = None
+                        else:
+                            print(f"[VacuumZones DEBUG] vacuum_extend.room_info не найден")
                             self.room_info = None
-                    else:
-                        print(f"[VacuumZones DEBUG] vacuum_extend.room_info не найден")
-                        self.room_info = None
-                
-                return await self.async_step_add_zone()
+                    
+                    return await self.async_step_add_zone()
+
+        # Получаем список всех виртуальных пылесосов для исключения
+        entity_reg = entity_registry.async_get(self.hass)
+        virtual_vacuums = []
+        for entity_id, entity in entity_reg.entities.items():
+            if entity.domain == "vacuum" and entity.platform == 'vacuum_zones':
+                virtual_vacuums.append(entity_id)
 
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({
                 vol.Required(CONF_ENTITY_ID): selector({
-                    "entity": {"domain": "vacuum"}
+                    "entity": {
+                        "domain": "vacuum",
+                        "exclude_entities": virtual_vacuums if virtual_vacuums else [],
+                    }
                 }),
             }),
             errors=errors,

@@ -67,7 +67,8 @@
     },
     "error": {
       "entity_not_found": "Vacuum entity not found",
-      "zone_exists": "Zone with this name already exists"
+      "zone_exists": "Zone with this name already exists",
+      "virtual_vacuum_selected": "Cannot use virtual vacuum as base entity. Please select a real vacuum."
     },
     "abort": {
       "already_configured": "This entity is already configured"
