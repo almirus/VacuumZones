@@ -50,14 +50,16 @@ from .const import (
 
 
 try:
-    # trying to import new constants from VacuumActivity HA Core 2026.1
     from homeassistant.components.vacuum import VacuumActivity
 
+    VACUUM_USE_ACTIVITY = True
+    STATE_IDLE = VacuumActivity.IDLE
+    STATE_PAUSED = VacuumActivity.PAUSED
     STATE_CLEANING = VacuumActivity.CLEANING
     STATE_RETURNING = VacuumActivity.RETURNING
     STATE_DOCKED = VacuumActivity.DOCKED
 except ImportError:
-    # if the new constants are unavailable, use the old ones
+    VACUUM_USE_ACTIVITY = False
     from homeassistant.components.vacuum import (
         STATE_CLEANING,
         STATE_RETURNING,
@@ -132,6 +134,119 @@ async def _async_miot_clean_rooms(
         )
 
 
+def _vacuum_state_key(state) -> str | None:
+    """Нормализованный ключ состояния пылесоса HA."""
+    if state is None:
+        return None
+    if hasattr(state, "value"):
+        state = state.value
+    key = str(state).lower()
+    if key in ("unavailable", "unknown"):
+        return None
+    if key in ("idle", "cleaning", "paused", "returning", "docked", "error"):
+        return key
+    return None
+
+
+def _vacuum_state_from_key(key: str):
+    return {
+        "idle": STATE_IDLE,
+        "cleaning": STATE_CLEANING,
+        "paused": STATE_PAUSED,
+        "returning": STATE_RETURNING,
+        "docked": STATE_DOCKED,
+        "error": STATE_IDLE,
+    }.get(key)
+
+
+def _set_vacuum_activity(entity, value) -> None:
+    """Установить состояние/activity виртуального пылесоса."""
+    if VACUUM_USE_ACTIVITY:
+        entity._attr_activity = value
+    else:
+        entity._attr_state = value
+
+
+def _get_vacuum_activity_key(entity) -> str | None:
+    if VACUUM_USE_ACTIVITY:
+        return _vacuum_state_key(getattr(entity, "_attr_activity", None))
+    return _vacuum_state_key(getattr(entity, "_attr_state", None))
+
+
+def _write_vacuum_activity(entity, value) -> None:
+    _set_vacuum_activity(entity, value)
+    entity.async_write_ha_state()
+
+
+async def _async_stop_parent_vacuum(hass, entity_id: str) -> None:
+    await hass.services.async_call(
+        VACUUM_DOMAIN, "stop", {ATTR_ENTITY_ID: entity_id}, True
+    )
+
+
+class _VacuumActivityMixin:
+    """HA 2026.1+: activity через _attr_activity (не cached_property базового класса)."""
+
+    @property
+    def activity(self):
+        if VACUUM_USE_ACTIVITY:
+            return getattr(self, "_attr_activity", STATE_IDLE)
+        return None
+
+
+def _sync_apartment_from_parent(apartment: "_ApartmentVacuumBase", parent_state) -> None:
+    """Синхронизировать «Квартира» со статусом реального пылесоса."""
+    key = _vacuum_state_key(parent_state)
+    if not key:
+        return
+    target = _vacuum_state_from_key(key)
+    if target is None or _get_vacuum_activity_key(apartment) == key:
+        return
+    _write_vacuum_activity(apartment, target)
+
+
+def _parent_vacuum_state_key(new_state: State) -> str | None:
+    """Ключ состояния родительского пылесоса (строка или enum)."""
+    if not new_state:
+        return None
+    key = _vacuum_state_key(new_state.state)
+    if key:
+        return key
+    return _vacuum_state_key(new_state.attributes.get("activity"))
+
+
+async def _async_handle_parent_vacuum_state(
+    entities: list,
+    queue: list,
+    new_state: State,
+    context: Context,
+) -> None:
+    """Синхронизация «Квартира» и очередь зон при смене состояния пылесоса."""
+    state_key = _parent_vacuum_state_key(new_state)
+
+    for entity in entities:
+        if isinstance(entity, _ApartmentVacuumBase):
+            if state_key:
+                _sync_apartment_from_parent(entity, state_key)
+            continue
+        if state_key in ("returning", "docked"):
+            if _get_vacuum_activity_key(entity) in ("cleaning", "paused"):
+                _write_vacuum_activity(entity, STATE_IDLE)
+                print(f"[VacuumZones DEBUG] Сбросили статус для {entity.name}")
+
+    if not queue or state_key not in ("returning", "docked"):
+        return
+
+    prev: ZoneVacuum = queue.pop(0)
+    await prev.internal_stop()
+
+    if not queue:
+        return
+
+    next_: ZoneVacuum = queue[0]
+    await next_.internal_start(context)
+
+
 async def async_setup_platform(hass, _, async_add_entities, discovery_info=None):
     """Set up platform from YAML configuration."""
     entity_id: str = discovery_info["entity_id"]
@@ -147,31 +262,12 @@ async def async_setup_platform(hass, _, async_add_entities, discovery_info=None)
     async def state_changed_event_listener(event: Event):
         if entity_id != event.data.get(ATTR_ENTITY_ID):
             return
-
         new_state: State = event.data.get("new_state")
-        
-        # Если родительский пылесос переходит в режим зарядки, сбрасываем статусы виртуальных пылесосов
-        if new_state.state in (STATE_RETURNING, STATE_DOCKED):
-            for entity in entities:
-                if entity._attr_state == STATE_CLEANING or entity._attr_state == STATE_PAUSED:
-                    entity._attr_state = STATE_IDLE
-                    entity.async_write_ha_state()
-                    print(f"[VacuumZones DEBUG] Сбросили статус для {entity.name}")
-        
-        if not queue:
+        if not new_state:
             return
-            
-        if new_state.state not in (STATE_RETURNING, STATE_DOCKED):
-            return
-
-        prev: ZoneVacuum = queue.pop(0)
-        await prev.internal_stop()
-
-        if not queue:
-            return
-
-        next_: ZoneVacuum = queue[0]
-        await next_.internal_start(event.context)
+        await _async_handle_parent_vacuum_state(
+            entities, queue, new_state, event.context
+        )
 
     hass.bus.async_listen(EVENT_STATE_CHANGED, state_changed_event_listener)
 
@@ -196,37 +292,17 @@ async def async_setup_entry(hass, config_entry: ConfigEntry, async_add_entities)
     async def state_changed_event_listener(event: Event):
         if entity_id != event.data.get(ATTR_ENTITY_ID):
             return
-
         new_state: State = event.data.get("new_state")
-        
-        # Если родительский пылесос переходит в режим зарядки, сбрасываем статусы виртуальных пылесосов
-        if new_state.state in (STATE_RETURNING, STATE_DOCKED):
-            for entity in entities:
-                if entity._attr_state == STATE_CLEANING or entity._attr_state == STATE_PAUSED:
-                    entity._attr_state = STATE_IDLE
-                    entity.async_write_ha_state()
-                    print(f"[VacuumZones DEBUG] Сбросили статус для {entity.name}")
-        
-        if not queue:
+        if not new_state:
             return
-            
-        if new_state.state not in (STATE_RETURNING, STATE_DOCKED):
-            return
-
-        prev: ZoneVacuum = queue.pop(0)
-        await prev.internal_stop()
-
-        if not queue:
-            return
-
-        next_: ZoneVacuum = queue[0]
-        await next_.internal_start(event.context)
+        await _async_handle_parent_vacuum_state(
+            entities, queue, new_state, event.context
+        )
 
     hass.bus.async_listen(EVENT_STATE_CHANGED, state_changed_event_listener)
 
 
-class ZoneVacuum(StateVacuumEntity):
-    _attr_state = STATE_IDLE
+class ZoneVacuum(_VacuumActivityMixin, StateVacuumEntity):
     _attr_supported_features = VacuumEntityFeature.START | VacuumEntityFeature.STOP
 
     domain: str = None
@@ -250,6 +326,7 @@ class ZoneVacuum(StateVacuumEntity):
             manufacturer="VacuumZones",
             model="Zone Controller",
         )
+        _set_vacuum_activity(self, STATE_IDLE)
 
     @property
     def vacuum_entity_id(self) -> str:
@@ -267,26 +344,6 @@ class ZoneVacuum(StateVacuumEntity):
                 return int(rooms[0])
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
-        return None
-
-    @property
-    def activity(self):  # HA 2026.1+
-        """Return current activity using VacuumActivity enum when available.
-
-        Сохраняет совместимость со старыми версиями HA, где enum отсутствует.
-        """
-        # Если константы являются строками (старые версии HA), просто не объявляем activity
-        if isinstance(STATE_CLEANING, str):
-            return None
-
-        # На новых версиях константы уже являются VacuumActivity
-        current = self._attr_state
-        if current == STATE_CLEANING:
-            return STATE_CLEANING
-        if current == STATE_RETURNING:
-            return STATE_RETURNING
-        if current == STATE_DOCKED:
-            return STATE_DOCKED
         return None
 
     async def async_added_to_hass(self):
@@ -378,8 +435,7 @@ class ZoneVacuum(StateVacuumEntity):
             
 
     async def internal_start(self, context: Context) -> None:
-        self._attr_state = STATE_CLEANING
-        self.async_write_ha_state()
+        _write_vacuum_activity(self, STATE_CLEANING)
 
         if self.script:
             await self.script.async_run(context=context)
@@ -394,16 +450,14 @@ class ZoneVacuum(StateVacuumEntity):
                 print(f"[VacuumZones DEBUG] Ошибка вызова {self.domain}.{self.service}: {e}")
 
     async def internal_stop(self):
-        self._attr_state = STATE_IDLE
-        self.async_write_ha_state()
+        _write_vacuum_activity(self, STATE_IDLE)
 
     async def async_start(self):
         if not self.room_clean_params:
             self.queue.append(self)
-            state = self.hass.states.get(self.vacuum_entity_id)
-            if len(self.queue) > 1 or state == STATE_CLEANING:
-                self._attr_state = STATE_PAUSED
-                self.async_write_ha_state()
+            parent = self.hass.states.get(self.vacuum_entity_id)
+            if len(self.queue) > 1 or _parent_vacuum_state_key(parent) == "cleaning":
+                _write_vacuum_activity(self, STATE_PAUSED)
                 return
             await self.internal_start(self._context)
             return
@@ -427,22 +481,30 @@ class ZoneVacuum(StateVacuumEntity):
             )
         except Exception as e:
             print(f"[VacuumZones DEBUG] Уборка {self.name}: {e}")
-        self._attr_state = STATE_CLEANING
-        self.async_write_ha_state()
+        _write_vacuum_activity(self, STATE_CLEANING)
 
     async def async_stop(self, **kwargs):
+        if self in self.queue:
+            self.queue.remove(self)
         for vacuum in self.queue:
             await vacuum.internal_stop()
-
         self.queue.clear()
+
+        parent = self.hass.states.get(self.vacuum_entity_id)
+        if _get_vacuum_activity_key(self) in ("cleaning", "paused") or (
+            parent and _parent_vacuum_state_key(parent) == "cleaning"
+        ):
+            try:
+                await _async_stop_parent_vacuum(self.hass, self.vacuum_entity_id)
+            except Exception as e:
+                print(f"[VacuumZones DEBUG] Остановка {self.name}: {e}")
 
         await self.internal_stop()
 
 
-class _ApartmentVacuumBase(StateVacuumEntity):
+class _ApartmentVacuumBase(_VacuumActivityMixin, StateVacuumEntity):
     """Пылесос «Квартира»: уборка нескольких комнат по порядку из настроек."""
 
-    _attr_state = STATE_IDLE
     _attr_supported_features = VacuumEntityFeature.START | VacuumEntityFeature.STOP
 
     def __init__(self, entity_id: str) -> None:
@@ -451,6 +513,7 @@ class _ApartmentVacuumBase(StateVacuumEntity):
         self._attr_unique_id = f"{entity_id}_{APARTMENT_ZONE_ID}"
         self._attr_device_info = apartment_device_info(entity_id)
         self.domain = "xiaomi_miot"
+        _set_vacuum_activity(self, STATE_IDLE)
 
     @property
     def extra_state_attributes(self) -> dict[str, str]:
@@ -462,26 +525,17 @@ class _ApartmentVacuumBase(StateVacuumEntity):
         )
         if reg_entry and reg_entry.platform == "xiaomi_miot":
             self.domain = "xiaomi_miot"
-
-    @property
-    def activity(self):
-        if isinstance(STATE_CLEANING, str):
-            return None
-        current = self._attr_state
-        if current == STATE_CLEANING:
-            return STATE_CLEANING
-        if current == STATE_RETURNING:
-            return STATE_RETURNING
-        if current == STATE_DOCKED:
-            return STATE_DOCKED
-        return None
+        parent = self.hass.states.get(self._vacuum_entity_id)
+        if parent:
+            state_key = _parent_vacuum_state_key(parent)
+            if state_key:
+                _sync_apartment_from_parent(self, state_key)
 
     async def async_start(self) -> None:
         room_attrs, _room_ids = self._ordered_rooms()
         if not room_attrs:
             return
-        self._attr_state = STATE_CLEANING
-        self.async_write_ha_state()
+        _write_vacuum_activity(self, STATE_CLEANING)
         try:
             await _async_miot_start_custom_clean(
                 self.hass, self._vacuum_entity_id, self.domain, room_attrs
@@ -490,8 +544,11 @@ class _ApartmentVacuumBase(StateVacuumEntity):
             print(f"[VacuumZones DEBUG] {DEFAULT_APARTMENT_NAME}: {e}")
 
     async def async_stop(self, **kwargs) -> None:
-        self._attr_state = STATE_IDLE
-        self.async_write_ha_state()
+        try:
+            await _async_stop_parent_vacuum(self.hass, self._vacuum_entity_id)
+        except Exception as e:
+            print(f"[VacuumZones DEBUG] Остановка {DEFAULT_APARTMENT_NAME}: {e}")
+        _write_vacuum_activity(self, STATE_IDLE)
 
     def _ordered_rooms(self) -> tuple[list[dict], list[int]]:
         raise NotImplementedError
