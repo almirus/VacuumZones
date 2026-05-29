@@ -3,9 +3,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.const import ATTR_ENTITY_ID
-
-from .const import DOMAIN, CONF_ZONES, CONF_ON, PARAM_TO_NAME
+from .const import DOMAIN, CONF_ON, CONF_ZONES, PARAM_TO_NAME
+from .entry_data import (
+    get_entity_id,
+    get_zone_subentry,
+    iter_zone_configs,
+    async_add_zone_entities,
+)
 
 
 async def async_setup_entry(
@@ -13,25 +17,24 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    data = entry.data
-    entity_id: str = data[ATTR_ENTITY_ID]
-    zones = data.get(CONF_ZONES, {})
+    entity_id: str = get_entity_id(entry)
 
-    entities: list[SwitchEntity] = []
-    for zone_id, cfg in zones.items():
+    for zone_id, cfg, subentry_id in iter_zone_configs(entry):
         device_identifier = f"{entity_id}_{zone_id}"
         device_name = f"Vacuum Zones - {cfg.get('name', zone_id)}"
-        entities.append(
-            ZoneOnSwitch(
-                entry=entry,
-                zone_id=zone_id,
-                is_on=bool(cfg.get(CONF_ON, True)),
-                device_identifier=device_identifier,
-                device_name=device_name,
-            )
+        async_add_zone_entities(
+            async_add_entities,
+            [
+                ZoneOnSwitch(
+                    entry=entry,
+                    zone_id=zone_id,
+                    is_on=bool(cfg.get(CONF_ON, True)),
+                    device_identifier=device_identifier,
+                    device_name=device_name,
+                )
+            ],
+            subentry_id,
         )
-
-    async_add_entities(entities)
 
 
 class ZoneOnSwitch(SwitchEntity):
@@ -73,10 +76,19 @@ class ZoneOnSwitch(SwitchEntity):
         await self._persist()
 
     async def _persist(self) -> None:
-        data = dict(self._entry.data)
-        zones = data.get(CONF_ZONES, {})
-        if self._zone_id in zones:
+        subentry = get_zone_subentry(self._entry, self._zone_id)
+        if subentry:
+            data = dict(subentry.data)
+            data[CONF_ON] = self._attr_is_on
+            self.hass.config_entries.async_update_subentry(
+                self._entry, subentry, data=data
+            )
+        else:
+            data = dict(self._entry.data)
+            zones = dict(data.get(CONF_ZONES, {}))
+            if self._zone_id not in zones:
+                return
             zones[self._zone_id][CONF_ON] = self._attr_is_on
             data[CONF_ZONES] = zones
             self.hass.config_entries.async_update_entry(self._entry, data=data)
-            await self.hass.config_entries.async_reload(self._entry.entry_id)
+        await self.hass.config_entries.async_reload(self._entry.entry_id)

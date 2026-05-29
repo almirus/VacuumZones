@@ -1,12 +1,20 @@
 """Constants for Vacuum Zones integration."""
 
-from homeassistant.helpers import area_registry
-
 DOMAIN = "vacuum_zones"
+SUBENTRY_ZONE = "zone"
 
 CONF_ZONES = "zones"
 CONF_ROOM_NAME = "room_name"
 CONF_ROOM_ID = "room_id"
+CONF_ROOM_ORDER = "room_order"
+MAX_ROOM_POSITIONS = 15
+
+APARTMENT_ZONE_ID = "apartment"
+DEFAULT_APARTMENT_NAME = "Квартира"
+ATTR_ROOM_ORDER_HINT = "room_order_hint"
+APARTMENT_ROOM_ORDER_HINT = (
+    "Для редактирования порядка комнат нажмите шестерёнку в настройках интеграции."
+)
 
 
 # Дополнительные параметры комнаты
@@ -78,5 +86,10 @@ PARAM_ORDER = {
 
 # Задержка перед выполнением уборки для сбора всех запусков (в секундах)
 DELAY_BEFORE_CLEAN = 5
+
+CLOUD_ROOMS_WAIT_MSG = {
+    "ru": "Повторите позже, дождитесь загрузки списка из облака",
+    "en": "Try again later, wait for the cloud room list to load",
+}
 
 

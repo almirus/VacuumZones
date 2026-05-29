@@ -18,11 +18,26 @@ from homeassistant.helpers.script import Script
 from homeassistant.config_entries import ConfigEntry
 import json
 import yaml
-import asyncio
 
+from .device import apartment_device_info
+from .entry_data import (
+    get_entity_id,
+    get_zones_from_entry,
+    iter_zone_configs,
+    async_add_zone_entities,
+)
+from .room_order import (
+    build_ordered_room_attrs,
+    build_ordered_room_ids,
+    build_room_attr,
+    get_config_entry_for_vacuum,
+)
+from .zone_config import prepare_zone_config
 from .const import (
     DOMAIN,
-    CONF_ZONES,
+    APARTMENT_ZONE_ID,
+    APARTMENT_ROOM_ORDER_HINT,
+    ATTR_ROOM_ORDER_HINT,
     CONF_ROOM_ID,
     CONF_CLEAN_TIMES,
     CONF_FAN_LEVEL,
@@ -30,7 +45,7 @@ from .const import (
     CONF_CLEAN_MODE,
     CONF_MOP_MODE,
     CONF_ON,
-    DELAY_BEFORE_CLEAN,
+    DEFAULT_APARTMENT_NAME,
 )
 
 
@@ -49,8 +64,72 @@ except ImportError:
         STATE_DOCKED,
     )
 
-# Глобальное хранилище для ожидающих запусков и таймеров
-_pending_vacuums = {}  # {entity_id: {timer_task: task, vacuums: [ZoneVacuum, ...]}}
+async def _async_miot_set_room_attrs(
+    hass,
+    entity_id: str,
+    domain: str,
+    room_attrs: list[dict],
+) -> None:
+    """MIOT set-room-clean-configs: siid=2, aiid=10."""
+    if not room_attrs:
+        return
+    room_attrs_str = json.dumps({"room_attrs": room_attrs}, ensure_ascii=False)
+    await hass.services.async_call(
+        domain,
+        "call_action",
+        {
+            ATTR_ENTITY_ID: entity_id,
+            "siid": 2,
+            "aiid": 10,
+            "params": room_attrs_str,
+        },
+        True,
+    )
+
+
+async def _async_miot_start_custom_clean(
+    hass,
+    entity_id: str,
+    domain: str,
+    room_attrs: list[dict],
+) -> None:
+    """MIOT S20+ собственный режим: aiid=10 (room_attrs) → aiid=7 (старт)."""
+    await _async_miot_set_room_attrs(hass, entity_id, domain, room_attrs)
+    await hass.services.async_call(
+        domain,
+        "call_action",
+        {
+            ATTR_ENTITY_ID: entity_id,
+            "siid": 6,
+            "aiid": 7,
+            "params": [],
+        },
+        True,
+    )
+
+
+async def _async_miot_clean_rooms(
+    hass,
+    entity_id: str,
+    domain: str,
+    room_attrs: list[dict],
+    room_ids: list[int],
+) -> None:
+    """MIOT одной комнаты: set-room-clean-configs + start-vacuum-room-sweep (aiid=13)."""
+    await _async_miot_set_room_attrs(hass, entity_id, domain, room_attrs)
+    if room_ids:
+        room_str = json.dumps({"room": room_ids}, ensure_ascii=False)
+        await hass.services.async_call(
+            domain,
+            "call_action",
+            {
+                ATTR_ENTITY_ID: entity_id,
+                "siid": 2,
+                "aiid": 13,
+                "params": [room_str],
+            },
+            True,
+        )
 
 
 async def async_setup_platform(hass, _, async_add_entities, discovery_info=None):
@@ -61,6 +140,8 @@ async def async_setup_platform(hass, _, async_add_entities, discovery_info=None)
         ZoneVacuum(name, config, entity_id, queue)
         for name, config in discovery_info["zones"].items()
     ]
+    if entities:
+        entities.append(ApartmentVacuumYaml(entity_id, discovery_info["zones"]))
     async_add_entities(entities)
 
     async def state_changed_event_listener(event: Event):
@@ -71,18 +152,6 @@ async def async_setup_platform(hass, _, async_add_entities, discovery_info=None)
         
         # Если родительский пылесос переходит в режим зарядки, сбрасываем статусы виртуальных пылесосов
         if new_state.state in (STATE_RETURNING, STATE_DOCKED):
-            # Отменяем таймеры для ожидающих пылесосов
-            if entity_id in _pending_vacuums:
-                pending = _pending_vacuums.pop(entity_id)
-                if pending["timer_task"]:
-                    pending["timer_task"].cancel()
-                # Сбрасываем статусы ожидающих пылесосов
-                for vacuum in pending["vacuums"]:
-                    vacuum._attr_state = STATE_IDLE
-                    vacuum.async_write_ha_state()
-                    print(f"[VacuumZones DEBUG] Отменили ожидание для {vacuum.name}")
-            
-            # Проверяем все виртуальные пылесосы
             for entity in entities:
                 if entity._attr_state == STATE_CLEANING or entity._attr_state == STATE_PAUSED:
                     entity._attr_state = STATE_IDLE
@@ -109,41 +178,20 @@ async def async_setup_platform(hass, _, async_add_entities, discovery_info=None)
 
 async def async_setup_entry(hass, config_entry: ConfigEntry, async_add_entities):
     """Set up platform from config entry."""
-    data = config_entry.data
-    entity_id: str = data[ATTR_ENTITY_ID]
+    entity_id: str = get_entity_id(config_entry)
     queue: list[ZoneVacuum] = []
-    
-    # Парсим конфигурацию зон
-    zones_config = {}
-    for zone_id, zone_data in data[CONF_ZONES].items():
-        config = dict(zone_data)
-        
-        # Парсим JSON строки если они есть
-        if isinstance(config.get("zone"), str):
-            try:
-                config["zone"] = json.loads(config["zone"])
-            except (json.JSONDecodeError, TypeError):
-                pass
-                
-        if isinstance(config.get("goto"), str):
-            try:
-                config["goto"] = json.loads(config["goto"])
-            except (json.JSONDecodeError, TypeError):
-                pass
-                
-        if isinstance(config.get(CONF_SEQUENCE), str):
-            try:
-                config[CONF_SEQUENCE] = yaml.safe_load(config[CONF_SEQUENCE])
-            except (yaml.YAMLError, TypeError):
-                pass
-        
-        zones_config[zone_id] = config
-    
-    entities = [
-        ZoneVacuum(name, config, entity_id, queue)
-        for name, config in zones_config.items()
-    ]
-    async_add_entities(entities)
+    entities: list[ZoneVacuum] = []
+
+    for zone_id, zone_data, subentry_id in iter_zone_configs(config_entry):
+        config = prepare_zone_config(zone_data)
+        entity = ZoneVacuum(zone_id, config, entity_id, queue)
+        entities.append(entity)
+        async_add_zone_entities(async_add_entities, [entity], subentry_id)
+
+    if entities:
+        apartment = ApartmentVacuum(config_entry, entity_id)
+        entities.append(apartment)
+        async_add_entities([apartment])
 
     async def state_changed_event_listener(event: Event):
         if entity_id != event.data.get(ATTR_ENTITY_ID):
@@ -153,18 +201,6 @@ async def async_setup_entry(hass, config_entry: ConfigEntry, async_add_entities)
         
         # Если родительский пылесос переходит в режим зарядки, сбрасываем статусы виртуальных пылесосов
         if new_state.state in (STATE_RETURNING, STATE_DOCKED):
-            # Отменяем таймеры для ожидающих пылесосов
-            if entity_id in _pending_vacuums:
-                pending = _pending_vacuums.pop(entity_id)
-                if pending["timer_task"]:
-                    pending["timer_task"].cancel()
-                # Сбрасываем статусы ожидающих пылесосов
-                for vacuum in pending["vacuums"]:
-                    vacuum._attr_state = STATE_IDLE
-                    vacuum.async_write_ha_state()
-                    print(f"[VacuumZones DEBUG] Отменили ожидание для {vacuum.name}")
-            
-            # Проверяем все виртуальные пылесосы
             for entity in entities:
                 if entity._attr_state == STATE_CLEANING or entity._attr_state == STATE_PAUSED:
                     entity._attr_state = STATE_IDLE
@@ -200,11 +236,11 @@ class ZoneVacuum(StateVacuumEntity):
     room_attrs_params: dict = None  # Параметры для сохранения настроек комнаты
 
     def __init__(self, name: str, config: dict, entity_id: str, queue: list):
+        self.zone_id = name
         self._attr_name = config.pop("name", name)
         self.service_data: dict = config | {ATTR_ENTITY_ID: entity_id}
         self.queue = queue
-        # Добавляем уникальный идентификатор для возможности управления через UI
-        zone_slug = name.lower().replace(" ", "_")
+        zone_slug = self.zone_id.lower().replace(" ", "_")
         self._attr_unique_id = f"{entity_id}_{zone_slug}"
         # Каждая зона должна быть отдельным устройством, иначе смена area применяется ко всем
         device_identifier = f"{entity_id}_{zone_slug}"
@@ -218,6 +254,20 @@ class ZoneVacuum(StateVacuumEntity):
     @property
     def vacuum_entity_id(self) -> str:
         return self.service_data[ATTR_ENTITY_ID]
+
+    def get_mi_room_id(self) -> int | None:
+        """ID комнаты Xiaomi из room_clean_params."""
+        if not self.room_clean_params:
+            return None
+        try:
+            params_str = self.room_clean_params.get("params", [""])[0]
+            room_data = json.loads(params_str)
+            rooms = room_data.get("room", [])
+            if rooms:
+                return int(rooms[0])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        return None
 
     @property
     def activity(self):  # HA 2026.1+
@@ -349,105 +399,36 @@ class ZoneVacuum(StateVacuumEntity):
 
     async def async_start(self):
         if not self.room_clean_params:
-            # Для зон без параметров комнаты (старый код)
             self.queue.append(self)
-            print(f"[VacuumZones DEBUG] Запуск очереди {self.vacuum_entity_id}")
             state = self.hass.states.get(self.vacuum_entity_id)
             if len(self.queue) > 1 or state == STATE_CLEANING:
                 self._attr_state = STATE_PAUSED
-                print(f"[VacuumZones DEBUG] Ставим на паузу {self.vacuum_entity_id}")
                 self.async_write_ha_state()
                 return
             await self.internal_start(self._context)
             return
-        
-        # Для зон с параметрами комнаты - ждем и собираем все запуски
-        entity_id = self.vacuum_entity_id
-        
-        # Добавляем текущий пылесос в список ожидающих
-        if entity_id not in _pending_vacuums:
-            _pending_vacuums[entity_id] = {"timer_task": None, "vacuums": []}
-        
-        _pending_vacuums[entity_id]["vacuums"].append(self)
-        self._attr_state = STATE_PAUSED
-        self.async_write_ha_state()
-        print(f"[VacuumZones DEBUG] Добавляем в очередь ожидающих {entity_id}, всего в очереди: {len(_pending_vacuums[entity_id]['vacuums'])}")
-        
-        # Если таймер уже установлен - не создаем новый
-        if _pending_vacuums[entity_id]["timer_task"] is not None:
+
+        # MIOT: только своя комната
+        vz_entry = get_config_entry_for_vacuum(self.hass, self.vacuum_entity_id)
+        room_attr = None
+        if vz_entry:
+            zones = get_zones_from_entry(vz_entry)
+            room_attr = build_room_attr(zones.get(self.zone_id, {}), self.zone_id)
+        if not room_attr:
+            await self.internal_start(self._context)
             return
-        
-        # Устанавливаем таймер на DELAY_BEFORE_CLEAN секунд
-        async def process_pending_vacuums():
-            await asyncio.sleep(DELAY_BEFORE_CLEAN)
-            
-            if entity_id not in _pending_vacuums:
-                return
-            
-            pending = _pending_vacuums.pop(entity_id)
-            vacuums = pending["vacuums"]
-            
-            if not vacuums:
-                return
-            
-            print(f"[VacuumZones DEBUG] Обрабатываем {len(vacuums)} пылесосов для {entity_id}")
-            
-            # Собираем все комнаты из массива комнат
-            all_rooms = []
-            for vacuum in vacuums:
-                # Парсим params из room_clean_params
-                params_str = vacuum.room_clean_params.get("params", [""])[0]
-                try:
-                    room_data = json.loads(params_str)
-                    room_ids = room_data.get("room", [])
-                    all_rooms.extend(room_ids)
-                except (json.JSONDecodeError, TypeError):
-                    print(f"[VacuumZones DEBUG] Ошибка парсинга params для {vacuum._attr_name}")
-            
-            if all_rooms:
-                # Объединяем все комнаты в один массив и убираем дубликаты
-                unique_rooms = list(set(all_rooms))
-                
-                # Вызываем сохранение параметров для каждой комнаты
-                for vacuum in vacuums:
-                    try:
-                        if vacuum.room_attrs_params:
-                            await vacuum.hass.services.async_call(
-                                vacuum.domain, "call_action",
-                                vacuum.room_attrs_params,
-                                True
-                            )
-                    except Exception as e:
-                        print(f"[VacuumZones DEBUG] Ошибка сохранения параметров для {vacuum._attr_name}: {e}")
-                
-                # Вызываем уборку один раз для всех комнат
-                room_for_clean_all = {
-                    "room": unique_rooms
-                }
-                room_for_clean_all_str = json.dumps(room_for_clean_all, ensure_ascii=False)
-                
-                try:
-                    first_vacuum = vacuums[0]
-                    await first_vacuum.hass.services.async_call(
-                        first_vacuum.domain, "call_action",
-                        {
-                            ATTR_ENTITY_ID: entity_id,
-                            "siid": 2,
-                            "aiid": 13,
-                            "params": [room_for_clean_all_str],
-                        },
-                        True
-                    )
-                    print(f"[VacuumZones DEBUG] Запустили уборку комнат {unique_rooms}")
-                except Exception as e:
-                    print(f"[VacuumZones DEBUG] Ошибка запуска уборки: {e}")
-                
-                # Устанавливаем состояние CLEANING для всех виртуальных пылесосов
-                for vacuum in vacuums:
-                    vacuum._attr_state = STATE_CLEANING
-                    vacuum.async_write_ha_state()
-        
-        _pending_vacuums[entity_id]["timer_task"] = self.hass.async_create_task(process_pending_vacuums())
+        try:
+            await _async_miot_clean_rooms(
+                self.hass,
+                self.vacuum_entity_id,
+                self.domain,
+                [room_attr],
+                [room_attr["id"]],
+            )
+        except Exception as e:
+            print(f"[VacuumZones DEBUG] Уборка {self.name}: {e}")
+        self._attr_state = STATE_CLEANING
+        self.async_write_ha_state()
 
     async def async_stop(self, **kwargs):
         for vacuum in self.queue:
@@ -456,3 +437,95 @@ class ZoneVacuum(StateVacuumEntity):
         self.queue.clear()
 
         await self.internal_stop()
+
+
+class _ApartmentVacuumBase(StateVacuumEntity):
+    """Пылесос «Квартира»: уборка нескольких комнат по порядку из настроек."""
+
+    _attr_state = STATE_IDLE
+    _attr_supported_features = VacuumEntityFeature.START | VacuumEntityFeature.STOP
+
+    def __init__(self, entity_id: str) -> None:
+        self._vacuum_entity_id = entity_id
+        self._attr_name = DEFAULT_APARTMENT_NAME
+        self._attr_unique_id = f"{entity_id}_{APARTMENT_ZONE_ID}"
+        self._attr_device_info = apartment_device_info(entity_id)
+        self.domain = "xiaomi_miot"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str]:
+        return {ATTR_ROOM_ORDER_HINT: APARTMENT_ROOM_ORDER_HINT}
+
+    async def async_added_to_hass(self) -> None:
+        reg_entry = entity_registry.async_get(self.hass).async_get(
+            self._vacuum_entity_id
+        )
+        if reg_entry and reg_entry.platform == "xiaomi_miot":
+            self.domain = "xiaomi_miot"
+
+    @property
+    def activity(self):
+        if isinstance(STATE_CLEANING, str):
+            return None
+        current = self._attr_state
+        if current == STATE_CLEANING:
+            return STATE_CLEANING
+        if current == STATE_RETURNING:
+            return STATE_RETURNING
+        if current == STATE_DOCKED:
+            return STATE_DOCKED
+        return None
+
+    async def async_start(self) -> None:
+        room_attrs, _room_ids = self._ordered_rooms()
+        if not room_attrs:
+            return
+        self._attr_state = STATE_CLEANING
+        self.async_write_ha_state()
+        try:
+            await _async_miot_start_custom_clean(
+                self.hass, self._vacuum_entity_id, self.domain, room_attrs
+            )
+        except Exception as e:
+            print(f"[VacuumZones DEBUG] {DEFAULT_APARTMENT_NAME}: {e}")
+
+    async def async_stop(self, **kwargs) -> None:
+        self._attr_state = STATE_IDLE
+        self.async_write_ha_state()
+
+    def _ordered_rooms(self) -> tuple[list[dict], list[int]]:
+        raise NotImplementedError
+
+
+class ApartmentVacuum(_ApartmentVacuumBase):
+    """Квартира для config entry: порядок из «Порядок уборки комнат»."""
+
+    def __init__(self, config_entry: ConfigEntry, entity_id: str) -> None:
+        super().__init__(entity_id)
+        self._config_entry = config_entry
+
+    def _ordered_rooms(self) -> tuple[list[dict], list[int]]:
+        return (
+            build_ordered_room_attrs(self._config_entry),
+            build_ordered_room_ids(self._config_entry),
+        )
+
+
+class ApartmentVacuumYaml(_ApartmentVacuumBase):
+    """Квартира для YAML: все зоны в порядке объявления."""
+
+    def __init__(self, entity_id: str, zones: dict) -> None:
+        super().__init__(entity_id)
+        self._zones = zones
+
+    def _ordered_rooms(self) -> tuple[list[dict], list[int]]:
+        room_attrs: list[dict] = []
+        room_ids: list[int] = []
+        for zone_id, cfg in self._zones.items():
+            if not bool(cfg.get(CONF_ON, True)):
+                continue
+            item = build_room_attr(cfg, zone_id)
+            if item:
+                room_attrs.append(item)
+                room_ids.append(item["id"])
+        return room_attrs, room_ids

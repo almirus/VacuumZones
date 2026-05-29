@@ -3,8 +3,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.const import ATTR_ENTITY_ID
-
+from .entry_data import (
+    get_entity_id,
+    get_zone_subentry,
+    iter_zone_configs,
+    async_add_zone_entities,
+)
 from .const import (
     DOMAIN,
     CONF_ZONES,
@@ -24,24 +28,19 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    data = entry.data
-    entity_id: str = data[ATTR_ENTITY_ID]
-    zones = data.get(CONF_ZONES, {})
+    entity_id: str = get_entity_id(entry)
 
-    entities: list[SelectEntity] = []
-    for zone_id, cfg in zones.items():
+    for zone_id, cfg, subentry_id in iter_zone_configs(entry):
         device_identifier = f"{entity_id}_{zone_id}"
         device_name = f"Vacuum Zones - {cfg.get('name', zone_id)}"
-        
-        # Создаем сущности в правильном порядке согласно PARAM_ORDER
         sorted_params = sorted(PARAMS.items(), key=lambda x: PARAM_ORDER.get(x[0], "9"))
-        
+        zone_entities: list[SelectEntity] = []
         for param, raw_options in sorted_params:
             labels = VALUE_TO_LABEL[param]
             options = list(labels.values())
             raw_value = str(cfg.get(param, raw_options[0]))
             value = labels.get(raw_value, options[0])
-            entities.append(
+            zone_entities.append(
                 ZoneParamSelect(
                     entry=entry,
                     zone_id=zone_id,
@@ -52,8 +51,7 @@ async def async_setup_entry(
                     device_name=device_name,
                 )
             )
-
-    async_add_entities(entities)
+        async_add_zone_entities(async_add_entities, zone_entities, subentry_id)
 
 
 class ZoneParamSelect(SelectEntity):
@@ -99,11 +97,19 @@ class ZoneParamSelect(SelectEntity):
         if raw_option is None:
             return
 
-        # Persist to config entry
-        data = dict(self._entry.data)
-        zones = data.get(CONF_ZONES, {})
-        if self._zone_id in zones:
+        subentry = get_zone_subentry(self._entry, self._zone_id)
+        if subentry:
+            data = dict(subentry.data)
+            data[self._param] = int(raw_option)
+            self.hass.config_entries.async_update_subentry(
+                self._entry, subentry, data=data
+            )
+        else:
+            data = dict(self._entry.data)
+            zones = dict(data.get(CONF_ZONES, {}))
+            if self._zone_id not in zones:
+                return
             zones[self._zone_id][self._param] = int(raw_option)
             data[CONF_ZONES] = zones
             self.hass.config_entries.async_update_entry(self._entry, data=data)
-            await self.hass.config_entries.async_reload(self._entry.entry_id)
+        await self.hass.config_entries.async_reload(self._entry.entry_id)

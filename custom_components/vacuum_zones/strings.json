@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Vacuum Zones Setup",
-        "description": "Select vacuum entity to create cleaning zones.",
+        "description": "Select vacuum entity. Cleaning zones are added as sub-entries.",
         "data": {
           "entity_id": "Vacuum Entity"
         }
@@ -23,26 +23,60 @@
         }
       }
     },
-    "options": {
+    "error": {
+      "entity_not_found": "Vacuum entity not found",
+      "virtual_vacuum_selected": "Cannot use virtual vacuum as base entity. Please select a real vacuum."
+    },
+    "abort": {
+      "already_configured": "This vacuum is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Settings",
+        "description": "Room cleaning order\n\nVacuum: {vacuum}\nCurrent order: {order_list}",
+        "data": {
+          "room_position_1": "Room to clean #1",
+          "room_position_2": "Room to clean #2",
+          "room_position_3": "Room to clean #3",
+          "room_position_4": "Room to clean #4",
+          "room_position_5": "Room to clean #5",
+          "room_position_6": "Room to clean #6",
+          "room_position_7": "Room to clean #7",
+          "room_position_8": "Room to clean #8",
+          "room_position_9": "Room to clean #9",
+          "room_position_10": "Room to clean #10",
+          "room_position_11": "Room to clean #11",
+          "room_position_12": "Room to clean #12",
+          "room_position_13": "Room to clean #13",
+          "room_position_14": "Room to clean #14",
+          "room_position_15": "Room to clean #15"
+        }
+      }
+    },
+    "error": {
+      "duplicate": "Each room can only appear once"
+    },
+    "abort": {
+      "no_zones": "Add at least one zone before setting order",
+      "too_many_zones": "Too many zones (max 15)"
+    }
+  },
+  "config_subentries": {
+    "zone": {
+      "title": "Cleaning zone",
+      "initiate_flow": {
+        "user": "Add vacuum to room",
+        "reconfigure": "Edit room settings"
+      },
       "step": {
-        "init": {
-          "title": "Vacuum Zones Settings",
-          "description": "Manage cleaning zones for vacuum: {entity_id}\n\nCurrent zones:\n{zones_list}",
+        "user": {
+          "title": "Add zone",
+          "description": "{rooms_hint}",
           "data": {
-            "add_zone": "Add Zone",
-            "zone_to_edit": "Zone to Edit",
-            "edit_zone": "Edit Zone",
-            "zone_to_delete": "Zone to Delete",
-            "delete_zone": "Delete Zone",
-            "finish": "Save Changes"
-          }
-        },
-        "add_zone": {
-          "title": "Add Zone",
-          "description": "Configure parameters for new cleaning zone.",
-          "data": {
-            "name": "Zone Name",
-            "room_id": "Room ID (optional)",
+            "name": "Select room from HA",
+            "room_id": "Room from Xiaomi cloud",
             "clean_times": "Cleaning Repetitions",
             "fan_level": "Suction Level",
             "water_level": "Water Level",
@@ -51,10 +85,12 @@
             "on": "Clean This Room"
           }
         },
-        "edit_zone": {
-          "title": "Edit Zone",
-          "description": "Change parameters for zone '{zone_name}' (Room ID: {room_id}).",
+        "reconfigure": {
+          "title": "Edit zone",
+          "description": "{rooms_hint}",
           "data": {
+            "name": "Select room from HA",
+            "room_id": "Room from Xiaomi cloud",
             "clean_times": "Cleaning Repetitions",
             "fan_level": "Suction Level",
             "water_level": "Water Level",
@@ -63,15 +99,13 @@
             "on": "Clean This Room"
           }
         }
+      },
+      "error": {
+        "zone_exists": "Zone with this name already exists"
+      },
+      "abort": {
+        "reconfigure_successful": "Zone updated"
       }
-    },
-    "error": {
-      "entity_not_found": "Vacuum entity not found",
-      "zone_exists": "Zone with this name already exists",
-      "virtual_vacuum_selected": "Cannot use virtual vacuum as base entity. Please select a real vacuum."
-    },
-    "abort": {
-      "already_configured": "This entity is already configured"
     }
   },
   "entity": {
@@ -121,6 +155,13 @@
     "switch": {
       "on": {
         "name": "Room Enabled"
+      }
+    },
+    "vacuum": {
+      "state_attributes": {
+        "room_order_hint": {
+          "name": "Room order"
+        }
       }
     }
   }
