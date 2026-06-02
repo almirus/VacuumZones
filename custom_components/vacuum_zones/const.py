@@ -87,6 +87,14 @@ PARAM_ORDER = {
 # Задержка перед выполнением уборки для сбора всех запусков (в секундах)
 DELAY_BEFORE_CLEAN = 5
 
+# MIOT: пауза перед первым set-room-clean-configs (пробуждение LAN/облако)
+MIOT_DELAY_BEFORE_SET_ROOMS = 2.0
+# Ожидание vacuum_extend.room_info после update_entity (облако медленнее)
+MIOT_ROOM_INFO_POLL_INTERVAL = 1.5
+MIOT_ROOM_INFO_MAX_WAIT = 20.0
+# MIOT: пауза после set-room-clean-configs перед стартом уборки
+MIOT_DELAY_AFTER_SET_ROOMS = 2.0
+
 CLOUD_ROOMS_WAIT_MSG = {
     "ru": "Повторите позже, дождитесь загрузки списка из облака",
     "en": "Try again later, wait for the cloud room list to load",

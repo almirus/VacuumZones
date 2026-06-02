@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -18,6 +19,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import entity_registry
 from homeassistant.helpers.selector import selector
+
+_LOGGER = logging.getLogger(__name__)
 
 from .const import (
     DOMAIN,
@@ -51,7 +54,7 @@ async def get_available_zones(hass: HomeAssistant) -> list[str]:
         if available_zones:
             return available_zones
     except Exception as e:
-        print(f"[VacuumZones DEBUG] Ошибка получения areas: {e}")
+        _LOGGER.warning("Не удалось получить areas из HA: %s", e)
     return DEFAULT_ROOMS
 
 
