@@ -114,6 +114,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    from .clean_batch import async_remove_batch
+
+    async_remove_batch(hass, entry)
     return await hass.config_entries.async_unload_platforms(
         entry, ["vacuum", "select", "switch"]
     )

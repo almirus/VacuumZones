@@ -192,22 +192,13 @@ def merge_room_attr_with_device(
     zone_id: str,
     device_row: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Параметры комнаты: с пылесоса (как Mi Home), порядок и on — из зоны HA."""
-    item = build_room_attr(cfg, zone_id)
-    if not item:
+    """Параметры уборки из зоны HA; имя комнаты — с пылесоса при наличии; on — из HA."""
+    ha_item = build_room_attr(cfg, zone_id)
+    if not ha_item:
         return None
-    if not device_row:
-        return item
-    for key in (
-        "room_name",
-        CONF_FAN_LEVEL,
-        CONF_WATER_LEVEL,
-        CONF_CLEAN_MODE,
-        CONF_CLEAN_TIMES,
-        CONF_MOP_MODE,
-    ):
-        if key in device_row:
-            item[key] = device_row[key]
+    item = dict(ha_item)
+    if device_row and device_row.get("room_name"):
+        item["room_name"] = device_row["room_name"]
     item["on"] = bool(cfg.get(CONF_ON, True))
     return item
 
@@ -243,14 +234,14 @@ def build_ordered_room_attrs_for_vacuum(
     device_rooms = parse_room_rows_from_room_info(room_info)
     if not device_rooms:
         _LOGGER.warning(
-            "Квартира/%s: нет vacuum_extend.room_info — параметры из зон HA; "
+            "%s: нет vacuum_extend.room_info — параметры из зон HA; "
             "обновите пылесос в HA или откройте карту в Mi Home",
             vacuum_entity_id,
         )
     else:
         trace(
             _LOGGER,
-            "Квартира/%s: room_info с пылососа, комнат=%s",
+            "%s: room_info с пылососа, комнат=%s",
             vacuum_entity_id,
             len(device_rooms),
         )
@@ -328,6 +319,45 @@ def _build_ordered_room_attrs_from_zones(
         len(result),
         include_disabled,
         bool(device_rooms),
+    )
+    return result
+
+
+def zone_id_for_room_id(zones: dict[str, dict], room_id: int) -> str | None:
+    """zone_id по CONF_ROOM_ID (включая __cloud_*)."""
+    for zid, cfg in zones.items():
+        try:
+            if int(cfg.get(CONF_ROOM_ID, 0) or 0) == room_id:
+                return zid
+        except (TypeError, ValueError):
+            continue
+    cid = cloud_zone_id(room_id)
+    return cid if cid in zones else None
+
+
+def build_room_attrs_for_selected_zones(
+    hass,
+    entry: ConfigEntry,
+    vacuum_entity_id: str,
+    selected_zone_ids: list[str] | set[str],
+) -> list[dict[str, Any]]:
+    """Полный room_attrs в порядке интеграции; on=true только у выбранных зон."""
+    selected = set(selected_zone_ids)
+    full = build_ordered_room_attrs_for_vacuum(
+        hass, entry, vacuum_entity_id, include_disabled=True
+    )
+    zones = get_zones_with_cloud(hass, entry)
+    result: list[dict[str, Any]] = []
+    for item in full:
+        row = dict(item)
+        zid = zone_id_for_room_id(zones, int(row["id"]))
+        row["on"] = zid in selected if zid else False
+        result.append(row)
+    trace(
+        _LOGGER,
+        "room_attrs (выбрано %s): %s",
+        len(selected),
+        format_room_order([r for r in result if r.get("on")]),
     )
     return result
 

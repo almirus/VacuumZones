@@ -22,29 +22,21 @@ import logging
 import time
 import yaml
 
-from .device import apartment_device_info
+from .clean_batch import VacuumCleanBatch, async_get_or_create_batch
 from .entry_data import (
     get_entity_id,
-    get_zones_from_entry,
     iter_zone_configs,
     async_add_zone_entities,
 )
 from .room_order import (
-    build_ordered_room_attrs_for_vacuum,
-    build_ordered_room_ids,
-    build_room_attr,
     format_room_ids,
     format_room_order,
-    get_config_entry_for_vacuum,
     parse_room_rows_from_room_info,
 )
-from .log_trace import trace
+from .log_trace import trace, trace_action
 from .zone_config import prepare_zone_config
 from .const import (
     DOMAIN,
-    APARTMENT_ZONE_ID,
-    APARTMENT_ROOM_ORDER_HINT,
-    ATTR_ROOM_ORDER_HINT,
     CONF_ROOM_ID,
     CONF_CLEAN_TIMES,
     CONF_FAN_LEVEL,
@@ -52,7 +44,6 @@ from .const import (
     CONF_CLEAN_MODE,
     CONF_MOP_MODE,
     CONF_ON,
-    DEFAULT_APARTMENT_NAME,
     MIOT_DELAY_AFTER_SET_ROOMS,
     MIOT_DELAY_BEFORE_SET_ROOMS,
     MIOT_ROOM_INFO_MAX_WAIT,
@@ -121,7 +112,7 @@ async def _async_ensure_room_info(hass, entity_id: str):
     if parse_room_rows_from_room_info(info):
         trace(
             _LOGGER,
-            "Квартира/%s: vacuum_extend.room_info уже в состоянии",
+            "%s: vacuum_extend.room_info уже в состоянии",
             entity_id,
         )
         return info
@@ -139,7 +130,7 @@ async def _async_ensure_room_info(hass, entity_id: str):
         if parse_room_rows_from_room_info(info):
             trace(
                 _LOGGER,
-                "Квартира/%s: vacuum_extend.room_info получен после опроса",
+                "%s: vacuum_extend.room_info получен после опроса",
                 entity_id,
             )
             return info
@@ -186,6 +177,14 @@ async def _async_miot_set_room_attrs(
     trace(_LOGGER, "set-room-clean-configs payload: %s", room_attrs_str)
 
     last_error: Exception | None = None
+    trace_action(
+        _LOGGER,
+        "miot",
+        entity=entity_id,
+        domain=domain,
+        service="call_action",
+        data=action_data,
+    )
     for attempt in range(1, retries + 1):
         try:
             await hass.services.async_call(
@@ -229,13 +228,45 @@ async def _async_miot_set_room_attrs(
     return False
 
 
+async def _async_miot_start_custom_sweep(
+    hass,
+    entity_id: str,
+    domain: str,
+) -> bool:
+    """Старт «Собственного режима» после aiid=10: siid=6 aiid=7 (параметры из room_attrs)."""
+    try:
+        _log_miot_action(
+            logging.INFO, "start-custom-sweep", entity_id, 6, 7
+        )
+        custom_data = {
+            ATTR_ENTITY_ID: entity_id,
+            "siid": 6,
+            "aiid": 7,
+            "params": [],
+        }
+        trace_action(
+            _LOGGER,
+            "miot",
+            entity=entity_id,
+            domain=domain,
+            service="call_action",
+            data=custom_data,
+        )
+        await hass.services.async_call(domain, "call_action", custom_data, True)
+        trace(_LOGGER, "Кастомная уборка запущена (siid=6 aiid=7) на %s", entity_id)
+        return True
+    except Exception as err:
+        _LOGGER.error("start-custom-sweep (siid=6 aiid=7) ошибка: %s", err)
+        return False
+
+
 async def _async_miot_start_room_sweep(
     hass,
     entity_id: str,
     domain: str,
     room_ids: list[int],
 ) -> bool:
-    """Старт по списку комнат: siid=2 aiid=13, порядок в массиве room."""
+    """Старт по списку комнат: siid=2 aiid=13 (без кастомных room_attrs — только id)."""
     if not room_ids:
         return False
     room_str = json.dumps({"room": room_ids}, ensure_ascii=False, separators=(",", ":"))
@@ -248,15 +279,24 @@ async def _async_miot_start_room_sweep(
             13,
             room=room_ids,
         )
+        sweep_data = {
+            ATTR_ENTITY_ID: entity_id,
+            "siid": 2,
+            "aiid": 13,
+            "params": [room_str],
+        }
+        trace_action(
+            _LOGGER,
+            "miot",
+            entity=entity_id,
+            domain=domain,
+            service="call_action",
+            data=sweep_data,
+        )
         await hass.services.async_call(
             domain,
             "call_action",
-            {
-                ATTR_ENTITY_ID: entity_id,
-                "siid": 2,
-                "aiid": 13,
-                "params": [room_str],
-            },
+            sweep_data,
             True,
         )
         trace(
@@ -275,20 +315,14 @@ async def _async_miot_start_custom_clean(
     entity_id: str,
     domain: str,
     room_attrs: list[dict],
-    *,
-    config_entry: ConfigEntry | None = None,
 ) -> bool:
-    """MIOT S20+ собственный режим: aiid=10 (room_attrs) → aiid=7 или aiid=13."""
-    trace(_LOGGER, "Квартира: подготовка MIOT для %s", entity_id)
+    """MIOT S20+ собственный режим: aiid=10 (room_attrs) → siid=6 aiid=7."""
+    trace(_LOGGER, "MIOT: подготовка для %s", entity_id)
     await _async_ensure_room_info(hass, entity_id)
-    if config_entry is not None:
-        room_attrs = build_ordered_room_attrs_for_vacuum(
-            hass, config_entry, entity_id, include_disabled=True
-        )
     expected_ids = _expected_enabled_room_ids(room_attrs)
     trace(
         _LOGGER,
-        "Квартира: room_attrs (%s шт.), включённые id=%s, порядок: %s",
+        "MIOT: room_attrs (%s шт.), включённые id=%s, порядок: %s",
         len(room_attrs),
         expected_ids,
         format_room_order(room_attrs),
@@ -302,90 +336,29 @@ async def _async_miot_start_custom_clean(
     )
     await asyncio.sleep(MIOT_DELAY_BEFORE_SET_ROOMS)
 
-    trace(_LOGGER, "Квартира: отправка set-room-clean-configs (aiid=10)")
+    trace(_LOGGER, "MIOT: отправка set-room-clean-configs (aiid=10)")
     set_ok = await _async_miot_set_room_attrs(
         hass, entity_id, domain, room_attrs, retries=1
     )
     if not set_ok:
-        _LOGGER.warning(
-            "Квартира: aiid=10 не удался — старт уборки всё равно продолжим"
-        )
+        _LOGGER.warning("MIOT: aiid=10 не удался — старт уборки всё равно продолжим")
     await asyncio.sleep(MIOT_DELAY_AFTER_SET_ROOMS)
 
-    if expected_ids:
-        trace(
-            _LOGGER,
-            "Квартира: старт уборки aiid=13, room=%s",
-            format_room_ids(expected_ids, room_attrs=room_attrs),
-        )
-        started = await _async_miot_start_room_sweep(
-            hass, entity_id, domain, expected_ids
-        )
-        if started:
-            trace(_LOGGER, "Квартира: уборка запущена (aiid=13)")
-        else:
-            _LOGGER.error("Квартира: не удалось запустить aiid=13")
-        return started
-
-    try:
-        _log_miot_action(
-            logging.INFO, "start-custom-sweep", entity_id, 6, 7
-        )
-        await hass.services.async_call(
-            domain,
-            "call_action",
-            {
-                ATTR_ENTITY_ID: entity_id,
-                "siid": 6,
-                "aiid": 7,
-                "params": [],
-            },
-            True,
-        )
-        trace(_LOGGER, "Кастомная уборка запущена (aiid=7) на %s", entity_id)
-        return True
-    except Exception as err:
-        _LOGGER.error("start-custom-sweep (aiid=7) ошибка: %s", err)
+    if not expected_ids:
+        _LOGGER.warning("MIOT: нет включённых комнат для уборки")
         return False
 
-
-async def _async_miot_clean_rooms(
-    hass,
-    entity_id: str,
-    domain: str,
-    room_attrs: list[dict],
-    room_ids: list[int],
-) -> None:
-    """MIOT одной комнаты: set-room-clean-configs + start-vacuum-room-sweep (aiid=13)."""
     trace(
         _LOGGER,
-        "Уборка комнаты %s на %s",
-        format_room_order(room_attrs),
-        entity_id,
+        "MIOT: старт собственного режима siid=6 aiid=7 (комнаты: %s)",
+        format_room_ids(expected_ids, room_attrs=room_attrs),
     )
-    await _async_miot_set_room_attrs(hass, entity_id, domain, room_attrs)
-    if room_ids:
-        room_str = json.dumps({"room": room_ids}, ensure_ascii=False)
-        _log_miot_action(
-            logging.INFO,
-            "start-vacuum-room-sweep",
-            entity_id,
-            2,
-            13,
-            room=room_ids,
-        )
-        trace(_LOGGER, "start-vacuum-room-sweep payload: %s", room_str)
-        await hass.services.async_call(
-            domain,
-            "call_action",
-            {
-                ATTR_ENTITY_ID: entity_id,
-                "siid": 2,
-                "aiid": 13,
-                "params": [room_str],
-            },
-            True,
-        )
+    started = await _async_miot_start_custom_sweep(hass, entity_id, domain)
+    if started:
+        trace(_LOGGER, "MIOT: уборка запущена (aiid=7)")
+    else:
+        _LOGGER.error("MIOT: не удалось запустить siid=6 aiid=7")
+    return started
 
 
 def _vacuum_state_key(state) -> str | None:
@@ -438,6 +411,57 @@ async def _async_stop_parent_vacuum(hass, entity_id: str) -> None:
     )
 
 
+async def _async_return_parent_to_dock(
+    hass, entity_id: str, domain: str | None
+) -> bool:
+    """Возврат на базу: vacuum.return_to_base, для xiaomi_miot — MIOT-действия."""
+    try:
+        await hass.services.async_call(
+            VACUUM_DOMAIN,
+            "return_to_base",
+            {ATTR_ENTITY_ID: entity_id},
+            True,
+        )
+        trace(_LOGGER, "return_to_base OK через %s", entity_id)
+        return True
+    except Exception as err:
+        trace(_LOGGER, "return_to_base недоступен для %s: %s", entity_id, err)
+
+    if domain != "xiaomi_miot":
+        return False
+
+    for siid, aiid, label in (
+        (6, 15, "stop-and-gocharge"),
+        (3, 1, "start-charge"),
+    ):
+        try:
+            _log_miot_action(
+                logging.INFO, label, entity_id, siid, aiid
+            )
+            await hass.services.async_call(
+                domain,
+                "call_action",
+                {
+                    ATTR_ENTITY_ID: entity_id,
+                    "siid": siid,
+                    "aiid": aiid,
+                    "params": [],
+                },
+                True,
+            )
+            trace(_LOGGER, "Возврат на базу (%s) OK: siid=%s aiid=%s", label, siid, aiid)
+            return True
+        except Exception as err:
+            _LOGGER.warning(
+                "Возврат на базу %s (siid=%s aiid=%s) ошибка: %s",
+                label,
+                siid,
+                aiid,
+                err,
+            )
+    return False
+
+
 class _VacuumActivityMixin:
     """HA 2026.1+: activity через _attr_activity (не cached_property базового класса)."""
 
@@ -446,24 +470,6 @@ class _VacuumActivityMixin:
         if VACUUM_USE_ACTIVITY:
             return getattr(self, "_attr_activity", STATE_IDLE)
         return None
-
-
-def _sync_apartment_from_parent(apartment: "_ApartmentVacuumBase", parent_state) -> None:
-    """Синхронизировать «Квартира» со статусом реального пылесоса."""
-    key = _vacuum_state_key(parent_state)
-    if not key:
-        return
-    target = _vacuum_state_from_key(key)
-    if target is None or _get_vacuum_activity_key(apartment) == key:
-        return
-    trace(
-        _LOGGER,
-        "Квартира: статус %s → %s (пылесос %s)",
-        _get_vacuum_activity_key(apartment),
-        key,
-        apartment._vacuum_entity_id,
-    )
-    _write_vacuum_activity(apartment, target)
 
 
 def _parent_vacuum_state_key(new_state: State) -> str | None:
@@ -479,10 +485,11 @@ def _parent_vacuum_state_key(new_state: State) -> str | None:
 async def _async_handle_parent_vacuum_state(
     entities: list,
     queue: list,
+    batch: VacuumCleanBatch | None,
     new_state: State,
     context: Context,
 ) -> None:
-    """Синхронизация «Квартира» и очередь зон при смене состояния пылесоса."""
+    """Сброс статусов зон и очередь (только не-MIOT) при смене состояния пылесоса."""
     state_key = _parent_vacuum_state_key(new_state)
     trace(
         _LOGGER,
@@ -491,11 +498,10 @@ async def _async_handle_parent_vacuum_state(
         state_key,
     )
 
+    if state_key in ("returning", "docked") and batch:
+        batch.clear_active()
+
     for entity in entities:
-        if isinstance(entity, _ApartmentVacuumBase):
-            if state_key:
-                _sync_apartment_from_parent(entity, state_key)
-            continue
         if state_key in ("returning", "docked"):
             if _get_vacuum_activity_key(entity) in ("cleaning", "paused"):
                 _write_vacuum_activity(entity, STATE_IDLE)
@@ -520,13 +526,16 @@ async def _async_handle_parent_vacuum_state(
 async def async_setup_platform(hass, _, async_add_entities, discovery_info=None):
     """Set up platform from YAML configuration."""
     entity_id: str = discovery_info["entity_id"]
+    yaml_zones = discovery_info["zones"]
     queue: list[ZoneVacuum] = []
-    entities = [
-        ZoneVacuum(name, config, entity_id, queue)
-        for name, config in discovery_info["zones"].items()
-    ]
-    if entities:
-        entities.append(ApartmentVacuumYaml(entity_id, discovery_info["zones"]))
+    batch = async_get_or_create_batch(
+        hass, vacuum_entity_id=entity_id, yaml_zones=yaml_zones
+    )
+    entities: list[ZoneVacuum] = []
+    for name, config in yaml_zones.items():
+        entity = ZoneVacuum(name, config, entity_id, queue, clean_batch=batch)
+        batch.register_zone(entity)
+        entities.append(entity)
     async_add_entities(entities)
 
     async def state_changed_event_listener(event: Event):
@@ -536,7 +545,7 @@ async def async_setup_platform(hass, _, async_add_entities, discovery_info=None)
         if not new_state:
             return
         await _async_handle_parent_vacuum_state(
-            entities, queue, new_state, event.context
+            entities, queue, batch, new_state, event.context
         )
 
     hass.bus.async_listen(EVENT_STATE_CHANGED, state_changed_event_listener)
@@ -546,18 +555,22 @@ async def async_setup_entry(hass, config_entry: ConfigEntry, async_add_entities)
     """Set up platform from config entry."""
     entity_id: str = get_entity_id(config_entry)
     queue: list[ZoneVacuum] = []
+    batch = async_get_or_create_batch(hass, config_entry=config_entry)
     entities: list[ZoneVacuum] = []
 
     for zone_id, zone_data, subentry_id in iter_zone_configs(config_entry):
         config = prepare_zone_config(zone_data)
-        entity = ZoneVacuum(zone_id, config, entity_id, queue)
+        entity = ZoneVacuum(
+            zone_id,
+            config,
+            entity_id,
+            queue,
+            clean_batch=batch,
+            config_entry=config_entry,
+        )
+        batch.register_zone(entity)
         entities.append(entity)
         async_add_zone_entities(async_add_entities, [entity], subentry_id)
-
-    if entities:
-        apartment = ApartmentVacuum(config_entry, entity_id)
-        entities.append(apartment)
-        async_add_entities([apartment])
 
     async def state_changed_event_listener(event: Event):
         if entity_id != event.data.get(ATTR_ENTITY_ID):
@@ -566,14 +579,18 @@ async def async_setup_entry(hass, config_entry: ConfigEntry, async_add_entities)
         if not new_state:
             return
         await _async_handle_parent_vacuum_state(
-            entities, queue, new_state, event.context
+            entities, queue, batch, new_state, event.context
         )
 
     hass.bus.async_listen(EVENT_STATE_CHANGED, state_changed_event_listener)
 
 
 class ZoneVacuum(_VacuumActivityMixin, StateVacuumEntity):
-    _attr_supported_features = VacuumEntityFeature.START | VacuumEntityFeature.STOP
+    _attr_supported_features = (
+        VacuumEntityFeature.START
+        | VacuumEntityFeature.STOP
+        | VacuumEntityFeature.RETURN_HOME
+    )
 
     domain: str = None
     service: str = None
@@ -581,11 +598,22 @@ class ZoneVacuum(_VacuumActivityMixin, StateVacuumEntity):
     room_clean_params: dict = None  # Параметры для уборки комнаты
     room_attrs_params: dict = None  # Параметры для сохранения настроек комнаты
 
-    def __init__(self, name: str, config: dict, entity_id: str, queue: list):
+    def __init__(
+        self,
+        name: str,
+        config: dict,
+        entity_id: str,
+        queue: list,
+        *,
+        clean_batch: VacuumCleanBatch | None = None,
+        config_entry: ConfigEntry | None = None,
+    ):
         self.zone_id = name
         self._attr_name = config.pop("name", name)
         self.service_data: dict = config | {ATTR_ENTITY_ID: entity_id}
         self.queue = queue
+        self._clean_batch = clean_batch
+        self._config_entry = config_entry
         zone_slug = self.zone_id.lower().replace(" ", "_")
         self._attr_unique_id = f"{entity_id}_{zone_slug}"
         # Каждая зона должна быть отдельным устройством, иначе смена area применяется ко всем
@@ -634,14 +662,6 @@ class ZoneVacuum(_VacuumActivityMixin, StateVacuumEntity):
         if goto := self.service_data.pop("goto", None):
             self.service_data["x_coord"] = goto[0]
             self.service_data["y_coord"] = goto[1]
-        trace(
-            _LOGGER,
-            "Зона %s: конфиг entity=%s domain=%s data=%s",
-            self._attr_name,
-            self.vacuum_entity_id,
-            self.domain,
-            {k: v for k, v in self.service_data.items() if k != ATTR_ENTITY_ID},
-        )
         if "segments" in self.service_data:
             # "xiaomi_miio", "dreame_vacuum", "roborock"
             self.service = "vacuum_clean_segment"
@@ -712,11 +732,19 @@ class ZoneVacuum(_VacuumActivityMixin, StateVacuumEntity):
             await self.script.async_run(context=context)
   
         if self.service:
+            trace_action(
+                _LOGGER,
+                "zone_start",
+                entity=self.vacuum_entity_id,
+                domain=self.domain,
+                service=self.service,
+                data=self.service_data,
+                extra=f"zone={self._attr_name}",
+            )
             try:
-                    await self.hass.services.async_call(
-                        self.domain, self.service, self.service_data, True
-                    )
-                    
+                await self.hass.services.async_call(
+                    self.domain, self.service, self.service_data, True
+                )
             except Exception as e:
                 _LOGGER.error(
                     "Зона %s: ошибка %s.%s: %s",
@@ -731,6 +759,24 @@ class ZoneVacuum(_VacuumActivityMixin, StateVacuumEntity):
         _write_vacuum_activity(self, STATE_IDLE)
 
     async def async_start(self):
+        try:
+            rid = int(self.service_data.get(CONF_ROOM_ID, 0) or 0)
+        except (TypeError, ValueError):
+            rid = 0
+        trace_action(
+            _LOGGER,
+            "zone_async_start",
+            entity=self.vacuum_entity_id,
+            extra=(
+                f"zone={self._attr_name} zone_id={self.zone_id} "
+                f"room_id={rid or '?'} ha={getattr(self, 'entity_id', '?')} "
+                f"miot={bool(self.room_clean_params)}"
+            ),
+        )
+        if self._clean_batch and self.room_clean_params:
+            await self._clean_batch.request_start(self)
+            return
+
         if not self.room_clean_params:
             self.queue.append(self)
             parent = self.hass.states.get(self.vacuum_entity_id)
@@ -746,38 +792,27 @@ class ZoneVacuum(_VacuumActivityMixin, StateVacuumEntity):
             await self.internal_start(self._context)
             return
 
-        # MIOT: только своя комната
-        vz_entry = get_config_entry_for_vacuum(self.hass, self.vacuum_entity_id)
-        room_attr = None
-        if vz_entry:
-            zones = get_zones_from_entry(vz_entry)
-            room_attr = build_room_attr(zones.get(self.zone_id, {}), self.zone_id)
-        if not room_attr:
-            await self.internal_start(self._context)
-            return
-        try:
-            await _async_miot_clean_rooms(
-                self.hass,
-                self.vacuum_entity_id,
-                self.domain,
-                [room_attr],
-                [room_attr["id"]],
-            )
-        except Exception as e:
-            _LOGGER.error("Зона %s: ошибка MIOT-уборки: %s", self._attr_name, e)
-        _write_vacuum_activity(self, STATE_CLEANING)
+        await self.internal_start(self._context)
 
     async def async_stop(self, **kwargs):
         trace(_LOGGER, "Зона %s: запрос стоп", self._attr_name)
+
         if self in self.queue:
             self.queue.remove(self)
         for vacuum in self.queue:
             await vacuum.internal_stop()
         self.queue.clear()
 
+        if self._clean_batch and self.room_clean_params:
+            await self._clean_batch.stop_cleaning()
+            await self.internal_stop()
+            return
+
         parent = self.hass.states.get(self.vacuum_entity_id)
         if _get_vacuum_activity_key(self) in ("cleaning", "paused") or (
-            parent and _parent_vacuum_state_key(parent) == "cleaning"
+            parent
+            and _parent_vacuum_state_key(parent)
+            in ("cleaning", "paused", "returning")
         ):
             try:
                 await _async_stop_parent_vacuum(self.hass, self.vacuum_entity_id)
@@ -788,115 +823,26 @@ class ZoneVacuum(_VacuumActivityMixin, StateVacuumEntity):
 
         await self.internal_stop()
 
+    async def async_return_to_base(self, **kwargs) -> None:
+        trace(_LOGGER, "Зона %s: запрос возврата на базу", self._attr_name)
 
-class _ApartmentVacuumBase(_VacuumActivityMixin, StateVacuumEntity):
-    """Пылесос «Квартира»: уборка нескольких комнат по порядку из настроек."""
+        if self in self.queue:
+            self.queue.remove(self)
+        for vacuum in self.queue:
+            await vacuum.internal_stop()
+        self.queue.clear()
 
-    _attr_supported_features = VacuumEntityFeature.START | VacuumEntityFeature.STOP
-
-    def __init__(self, entity_id: str) -> None:
-        self._vacuum_entity_id = entity_id
-        self._attr_name = DEFAULT_APARTMENT_NAME
-        self._attr_unique_id = f"{entity_id}_{APARTMENT_ZONE_ID}"
-        self._attr_device_info = apartment_device_info(entity_id)
-        self.domain = "xiaomi_miot"
-        _set_vacuum_activity(self, STATE_IDLE)
-
-    @property
-    def extra_state_attributes(self) -> dict[str, str]:
-        return {ATTR_ROOM_ORDER_HINT: APARTMENT_ROOM_ORDER_HINT}
-
-    async def async_added_to_hass(self) -> None:
-        reg_entry = entity_registry.async_get(self.hass).async_get(
-            self._vacuum_entity_id
-        )
-        if reg_entry and reg_entry.platform == "xiaomi_miot":
-            self.domain = "xiaomi_miot"
-        parent = self.hass.states.get(self._vacuum_entity_id)
-        if parent:
-            state_key = _parent_vacuum_state_key(parent)
-            if state_key:
-                _sync_apartment_from_parent(self, state_key)
-
-    async def async_start(self, **kwargs) -> None:
-        trace(
-            _LOGGER,
-            "Квартира: async_start → пылесос %s, domain=%s",
-            self._vacuum_entity_id,
-            self.domain,
-        )
-        await _async_ensure_room_info(self.hass, self._vacuum_entity_id)
-        room_attrs, room_ids = self._ordered_rooms()
-        if not room_attrs:
-            _LOGGER.warning("Квартира: нет комнат для уборки (room_attrs пуст)")
+        if self._clean_batch:
+            await self._clean_batch.return_to_dock()
+            _write_vacuum_activity(self, STATE_RETURNING)
             return
-        trace(
-            _LOGGER,
-            "Квартира: зон в конфиге, id для уборки=%s, preview: %s",
-            room_ids,
-            format_room_order(room_attrs),
-        )
-        ok = await _async_miot_start_custom_clean(
-            self.hass,
-            self._vacuum_entity_id,
-            self.domain,
-            room_attrs,
-            config_entry=getattr(self, "_config_entry", None),
+
+        ok = await _async_return_parent_to_dock(
+            self.hass, self.vacuum_entity_id, self.domain
         )
         if ok:
-            trace(_LOGGER, "Квартира: сценарий завершён успешно")
-            _write_vacuum_activity(self, STATE_CLEANING)
+            _write_vacuum_activity(self, STATE_RETURNING)
         else:
-            _LOGGER.warning("Квартира: сценарий завершён с ошибкой")
-            _write_vacuum_activity(self, STATE_IDLE)
-
-    async def async_stop(self, **kwargs) -> None:
-        trace(_LOGGER, "Квартира: запрос стоп на %s", self._vacuum_entity_id)
-        try:
-            await _async_stop_parent_vacuum(self.hass, self._vacuum_entity_id)
-            trace(_LOGGER, "Квартира: vacuum.stop отправлен")
-        except Exception as e:
-            _LOGGER.error("Квартира: ошибка vacuum.stop: %s", e)
-        _write_vacuum_activity(self, STATE_IDLE)
-
-    def _ordered_rooms(self) -> tuple[list[dict], list[int]]:
-        raise NotImplementedError
-
-
-class ApartmentVacuum(_ApartmentVacuumBase):
-    """Квартира для config entry: порядок из «Порядок уборки комнат»."""
-
-    def __init__(self, config_entry: ConfigEntry, entity_id: str) -> None:
-        super().__init__(entity_id)
-        self._config_entry = config_entry
-
-    def _ordered_rooms(self) -> tuple[list[dict], list[int]]:
-        return (
-            build_ordered_room_attrs_for_vacuum(
-                self.hass,
-                self._config_entry,
-                self._vacuum_entity_id,
-                include_disabled=True,
-            ),
-            build_ordered_room_ids(self._config_entry),
-        )
-
-
-class ApartmentVacuumYaml(_ApartmentVacuumBase):
-    """Квартира для YAML: все зоны в порядке объявления."""
-
-    def __init__(self, entity_id: str, zones: dict) -> None:
-        super().__init__(entity_id)
-        self._zones = zones
-
-    def _ordered_rooms(self) -> tuple[list[dict], list[int]]:
-        room_attrs: list[dict] = []
-        room_ids: list[int] = []
-        for zone_id, cfg in self._zones.items():
-            if not bool(cfg.get(CONF_ON, True)):
-                continue
-            item = build_room_attr(cfg, zone_id)
-            if item:
-                room_attrs.append(item)
-                room_ids.append(item["id"])
-        return room_attrs, room_ids
+            _LOGGER.error(
+                "Зона %s: не удалось отправить возврат на базу", self._attr_name
+            )
